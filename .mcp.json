@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "dart": {
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/dart",
+      "args": ["mcp-server"],
+      "env": {}
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "/Users/dise/.nvm/versions/node/v22.22.2/bin/npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--sandbox",
+        "--output-dir",
+        "/private/tmp/claude-portfolio-flutter/playwright"
+      ],
+      "env": {}
+    }
+  }
+}

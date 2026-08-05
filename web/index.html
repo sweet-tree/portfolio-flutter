@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+  <title>Dmitry Sevryukov — Developer</title>
+  <meta name="description"
+        content="Flutter, Dart and systems work. Trading desks, custom protocol clients, GPU rendering.">
+
+  <!-- Open Graph and Twitter cards.
+       These have to be hand-written and cannot come from Flutter. The app
+       renders its text to a canvas, so the DOM a crawler or a link unfurler
+       sees is essentially empty — without these, a link pasted into LinkedIn,
+       Slack or a message shows a blank card. That matters far more here than
+       search ranking does, because visitors arrive from a CV link rather than
+       from a search.
+       TODO: point og:url and og:image at the real domain and a real 1200x630
+       preview image once both exist. A missing image is a blank card. -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Dmitry Sevryukov — Developer">
+  <meta property="og:description"
+        content="Flutter, Dart and systems work. Trading desks, custom protocol clients, GPU rendering.">
+  <meta property="og:image" content="icons/Icon-512.png">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <!-- iOS -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Sevryukov">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    /* Matches the app background so there is no white flash before the first
+       frame, and no bounce past the edges on iOS. */
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #0B0B0F;
+      overscroll-behavior: none;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    // Bootstrap by hand rather than using the generated flutter_bootstrap.js,
+    // so the service worker can be turned OFF.
+    //
+    // Flutter's service worker serves the CACHED build on load and fetches the
+    // update in the background, so a returning visitor sees the PREVIOUS
+    // version until they reload a second time. On iOS it is stickier still.
+    // For a site with no offline requirement that is pure downside: it means
+    // "I deployed a fix" and "you can see the fix" are different events.
+    //
+    // Passing no serviceWorkerSettings skips registration entirely. Cache
+    // behaviour is handled by web/_headers instead.
+    {{flutter_js}}
+    {{flutter_build_config}}
+    _flutter.loader.load();
+  </script>
+</body>
+</html>

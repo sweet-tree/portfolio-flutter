@@ -1,0 +1,21 @@
+# Static analysis config. Run with `flutter analyze`.
+#
+# very_good_analysis is a stricter lint set than the default flutter_lints:
+# it catches unused code, missing return types, and unsafe patterns that the
+# default set lets through.
+include: package:very_good_analysis/analysis_options.yaml
+
+analyzer:
+  exclude:
+    # Vendored upstream package — not ours to lint.
+    - third_party/**
+  errors:
+    # Treat missing awaits and dead code as hard errors, not warnings.
+    unawaited_futures: error
+    dead_code: error
+
+linter:
+  rules:
+    # This app is never published to pub.dev, so doc comments on every public
+    # member are noise rather than value.
+    public_member_api_docs: false

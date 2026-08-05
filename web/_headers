@@ -1,0 +1,40 @@
+# Cloudflare Pages response headers.
+#
+# Flutter copies everything in web/ into build/web, so this file lands at the
+# deployment root where Pages expects it.
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+  # ⚠️ NO CROSS-ORIGIN ISOLATION HERE, AND THAT IS DELIBERATE.
+  #
+  # Adding these two headers:
+  #
+  #   Cross-Origin-Opener-Policy: same-origin
+  #   Cross-Origin-Embedder-Policy: require-corp
+  #
+  # unlocks the multi-threaded renderer and makes Flutter web faster. It also
+  # BLOCKS every cross-origin resource that does not explicitly opt in — an
+  # embedded video, an image hotlinked from anywhere else, a third-party font,
+  # an analytics script. They fail silently.
+  #
+  # A 3D app that generates everything at runtime pays nothing for that. A
+  # portfolio is content-heavy and will want to embed things, so the trade runs
+  # the other way here: flexibility beats the frame rate.
+  #
+  # If these are ever added back, expect embeds to break, and know that is why.
+
+  # ⚠️ EVERYTHING REVALIDATES. Do not add long-lived immutable caching here.
+  #
+  # Flutter's web output is NOT content-hashed: main.dart.wasm, main.dart.js,
+  # flutter.js and the canvaskit files all keep the same filename forever while
+  # their contents change on every build. Caching them as immutable means a
+  # deploy is invisible — the browser has been told it may serve the old bytes
+  # for a year and will never ask again. On the previous project exactly that
+  # happened, and several deploys silently did nothing.
+  #
+  # must-revalidate with ETag costs one conditional request per file and gets
+  # a 304 when unchanged, so the bytes are still served from cache. That is a
+  # small price for a deploy actually taking effect.
+  Cache-Control: public, max-age=0, must-revalidate

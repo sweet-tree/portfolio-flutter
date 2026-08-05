@@ -1,0 +1,31 @@
+name: portfolio
+description: "Dmitry Sevryukov — developer portfolio. Flutter, web only."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+# Dependencies are deliberately few. Anything added here has to earn its place
+# against simply writing the thing, and it costs download size on a site whose
+# job is to load fast for a stranger who may leave.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The one exception, and it earns it: this is a *website*, so /work/<project>
+  # has to be a real URL that can be pasted into a CV, survive a refresh, and
+  # work with the back button. Hand-rolling Navigator 2.0 on web is genuinely
+  # unpleasant for no payoff anyone can see.
+  go_router: ^17.4.0
+  web: ^1.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  # Stricter than flutter_lints: catches unused code, missing return types, and
+  # unsafe patterns the default set lets through.
+  very_good_analysis: ^10.3.0
+
+flutter:
+  uses-material-design: true

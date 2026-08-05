@@ -1,0 +1,82 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  # Pull requests get their own preview URL, so a change can be opened on a
+  # real phone before it reaches production.
+  pull_request:
+  # Lets you redeploy from the Actions tab without pushing a commit.
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes an in-flight deploy irrelevant.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Pinned, so a floating "stable" cannot change the toolchain under a
+          # deploy without warning.
+          flutter-version: 3.44.7
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Verify
+        # Tests run in a browser, not on the Dart VM. Anything that reaches a
+        # browser API — here `package:web`, used by the stats overlay — fails to
+        # COMPILE for the VM target, so the test file never even loads. This is
+        # a web-only site; running its tests anywhere else tests a build that
+        # will never ship.
+        run: |
+          flutter analyze
+          flutter test --platform chrome
+
+      - name: Build (WebAssembly, release)
+        # Flutter also emits the JavaScript build alongside as an automatic
+        # fallback for browsers without WasmGC — notably every browser on iOS,
+        # since they are all WebKit underneath.
+        run: flutter build web --wasm --release
+
+      - name: Confirm _headers survived the build
+        # The cache rules live in that file. If it is ever missing, deploys go
+        # out but browsers may keep serving stale bytes — a silent failure, so
+        # fail loudly here instead.
+        run: test -f build/web/_headers
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Cloudflare treats the project's production branch specially: `main`
+          # publishes to the live URL, anything else gets its own preview URL.
+          #
+          # The project name is what the dashboard URL says
+          # (/pages/view/portfolio-flutter) — NOT the pages.dev subdomain, which
+          # carries an extra suffix Cloudflare appends when the plain name is
+          # already taken.
+          #
+          # ⚠️ A Pages project name can NEVER be renamed. On the previous
+          # project a typo in it could only be fixed by creating a new project
+          # and abandoning the old URL.
+          #
+          # --commit-dirty silences a warning about the working tree: `flutter
+          # pub get` touches files during the build, which wrangler notices and
+          # reports even though the deployed output is exactly what we built.
+          command: >-
+            pages deploy build/web
+            --project-name=portfolio-flutter
+            --branch=${{ github.head_ref || github.ref_name }}
+            --commit-dirty=true
