@@ -25,6 +25,13 @@ const double kCubeY = 0.34;
 /// Cube size as a fraction of the viewport's shortest side.
 const double kCubeSize = 0.26;
 
+/// What fraction of full resolution the scene shader renders at.
+///
+/// Fill rate is the cost model, so this is the one lever that reduces work
+/// without changing what the shader computes — 0.7 is roughly half the pixels.
+/// Only the shader softens; text is a separate layer at full resolution.
+const double kSceneScale = 0.7;
+
 class WorldScene extends StatefulWidget {
   const WorldScene({required this.camera, super.key});
 
@@ -97,16 +104,38 @@ class _ScenePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // ── Rendered below full resolution, then upscaled ───────────────────────
+    //
+    // The scene is a full-screen raytraced shader, so its cost is fill rate:
+    // instructions × pixels × frames. Measured, the volumetric alone took the
+    // frame from 75fps to 30. Pixel count is the only lever that reduces the
+    // work without changing what the shader computes.
+    //
+    // ⚠️ It has to go through an offscreen buffer. Scaling the canvas
+    // transform and drawing a smaller rect saves nothing — the same screen
+    // area is still rasterised, so the same number of fragments run.
+    //
+    // The TEXT is unaffected: Flutter draws it as a separate layer at full
+    // resolution, so only the shader softens. On a cloudy, noisy scene that is
+    // close to invisible, which is why this is preferable to cutting the
+    // march or the octaves.
+    final low = Size(
+      (size.width * kSceneScale).roundToDouble(),
+      (size.height * kSceneScale).roundToDouble(),
+    );
+    if (low.isEmpty) return;
+
     // The cube belongs to the first location, so travelling moves it off
-    // screen with its section.
-    final cubeX = size.width * (kCubeX - camera);
-    final cubeY = size.height * kCubeY;
-    final unit = size.shortestSide * kCubeSize;
+    // screen with its section. Everything is derived from the LOW size, so
+    // the composition is identical once upscaled.
+    final cubeX = low.width * (kCubeX - camera);
+    final cubeY = low.height * kCubeY;
+    final unit = low.shortestSide * kCubeSize;
 
     // Flat indices in declaration order from the .frag.
     shader
-      ..setFloat(0, size.width)
-      ..setFloat(1, size.height)
+      ..setFloat(0, low.width)
+      ..setFloat(1, low.height)
       ..setFloat(2, time)
       ..setFloat(3, camera)
       ..setFloat(4, velocity)
@@ -119,8 +148,26 @@ class _ScenePainter extends CustomPainter {
       ..setFloat(8, 0)   // uCubeGlow
       ..setFloat(9, 1)   // uSurface
       ..setFloat(10, 0)  // uSky — off; the shader is still compiled in
-      ..setFloat(11, 1); // uStars — space beyond the table
-    canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
+      ..setFloat(11, 1)  // uStars — space beyond the table
+      ..setFloat(12, 1); // uClouds — the flying volumetric energy
+
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
+    final picture = recorder.endRecording();
+    final image = picture.toImageSync(
+      low.width.toInt(),
+      low.height.toInt(),
+    );
+
+    canvas.drawImageRect(
+      image,
+      Offset.zero & low,
+      Offset.zero & size,
+      Paint()..filterQuality = FilterQuality.high,
+    );
+
+    image.dispose();
+    picture.dispose();
   }
 
   @override

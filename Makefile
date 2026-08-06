@@ -47,8 +47,13 @@ dev:
 	flutter run -d chrome
 
 # Production build.
+#
+# --no-web-resources-cdn self-hosts CanvasKit instead of pulling it from
+# gstatic.com. Two reasons, both load-bearing: COEP (see web/_headers) blocks
+# cross-origin fetches, so the CDN copy would be refused and the app would not
+# start; and it takes ~1.5MB of third-party download off the critical path.
 build:
-	flutter build web --wasm --release
+	flutter build web --wasm --release --no-web-resources-cdn
 
 # Serve the production build locally with caching OFF.
 #

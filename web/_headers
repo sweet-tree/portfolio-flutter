@@ -7,23 +7,28 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
 
-  # ⚠️ NO CROSS-ORIGIN ISOLATION HERE, AND THAT IS DELIBERATE.
+  # ⚠️ CROSS-ORIGIN ISOLATION IS ON, AND THAT IS DELIBERATE.
   #
-  # Adding these two headers:
+  # These two headers unlock Flutter's MULTI-THREADED renderer. Without them
+  # everything runs on one thread, which on this site measured 32 FPS on a
+  # desktop WebAssembly build — the scene is a full-screen raytraced shader,
+  # so it is exactly the workload that needs the threads.
   #
-  #   Cross-Origin-Opener-Policy: same-origin
-  #   Cross-Origin-Embedder-Policy: require-corp
+  # The cost, and it is real: every cross-origin resource that does not
+  # explicitly opt in is BLOCKED, and it fails silently. No embedded video, no
+  # hotlinked images, no third-party fonts, no analytics — unless they are
+  # self-hosted or send their own CORP header.
   #
-  # unlocks the multi-threaded renderer and makes Flutter web faster. It also
-  # BLOCKS every cross-origin resource that does not explicitly opt in — an
-  # embedded video, an image hotlinked from anywhere else, a third-party font,
-  # an analytics script. They fail silently.
+  # This file previously argued the other way, on the grounds that a portfolio
+  # is content-heavy. It turned out not to be: the site is a shader with zero
+  # assets, one bundled font, and no analytics. Nothing here is cross-origin.
   #
-  # A 3D app that generates everything at runtime pays nothing for that. A
-  # portfolio is content-heavy and will want to embed things, so the trade runs
-  # the other way here: flexibility beats the frame rate.
-  #
-  # If these are ever added back, expect embeds to break, and know that is why.
+  # ⚠️ REQUIRES `--no-web-resources-cdn` ON THE BUILD. CanvasKit is otherwise
+  # fetched from gstatic.com, which COEP blocks — the app would not start.
+  # See the Makefile; the flag also removes ~1.5MB of third-party download
+  # from the critical path, which was worth doing regardless.
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
 
   # ⚠️ EVERYTHING REVALIDATES. Do not add long-lived immutable caching here.
   #

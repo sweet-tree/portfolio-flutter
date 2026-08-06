@@ -28,6 +28,12 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
     """Serves files with caching disabled in every way a browser respects."""
 
     def end_headers(self) -> None:
+        # Match the production headers in web/_headers: without these the dev
+        # server is NOT cross-origin isolated, Flutter falls back to the
+        # single-threaded renderer, and local frame rates lie about the deploy.
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")

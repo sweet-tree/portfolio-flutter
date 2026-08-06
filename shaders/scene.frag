@@ -38,6 +38,7 @@ uniform float uCubeGlow;   // reserved; kept so the indices below do not move
 uniform float uSurface;    // 0 = no surface, 1 = full glass
 uniform float uSky;        // 0 = flat ground colour, 1 = the field
 uniform float uStars;      // 0 = off, 1 = space beyond the table
+uniform float uClouds;     // 0 = off, 1 = the flying volumetric energy
 
 out vec4 fragColor;
 
@@ -388,6 +389,172 @@ vec3 starsColor(vec3 dir) {
   return c + vec3(0.012, 0.014, 0.024);
 }
 
+/// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
+///
+/// The octave amplitudes are known — 0.5, 0.25, 0.125, 0.0625, 0.03125,
+/// summing to 0.96875 — so after each octave the maximum the remaining ones
+/// could still add is known exactly. If the partial sum plus that maximum is
+/// already below the threshold the caller compares against, no possible value
+/// of the remaining octaves changes the outcome, so they are not evaluated.
+///
+/// This is not an approximation: where it bails, the caller's result is zero
+/// either way. It is pure saved work, and inside a 28-step march it is most
+/// of the shader's cost.
+float fbm3Early(vec3 p, float needed) {
+  const float kTotalAmp = 0.96875;
+  float sum = 0.0;
+  float amp = 0.5;
+  float spent = 0.0;
+  for (int i = 0; i < 5; i++) {
+    sum += amp * noise3(p);
+    spent += amp;
+    // Best case for every octave still to come.
+    if (sum + (kTotalAmp - spent) < needed) return sum;
+    p *= 2.07;
+    amp *= 0.5;
+  }
+  return sum;
+}
+
+// ── The flying energy: a volumetric medium ──────────────────────────────────
+//
+// The SECOND structure. The surface energy is bound to the glass — it flows
+// across it and pours over the edge. This one is free in the air: a slab of
+// participating medium in front of the panel that the camera ray marches
+// through, accumulating density and transmittance.
+//
+// It has to be volumetric rather than another painted layer, for two reasons
+// that both matter later: only a medium with real depth parallaxes as the
+// world moves, and only a medium can have the TYPE inside it rather than
+// merely behind it.
+
+// Declared here because GLSL needs a function before its first use, and the
+// sampling section that defines this sits further down the file.
+float ign(vec2 pixel);
+
+const float kCloudNear = 2.4;   // how far in front of the panel it reaches
+const float kCloudTop = 0.35;   // a little above the ledge
+const float kCloudDrop = 5.0;   // how far down it hangs
+
+/// Density of the medium at a point, 0..1.
+/// The cloud's analytic envelope — where it can exist at all, before any
+/// noise. A few exp and smoothstep calls, against hundreds of hash lookups
+/// for the noise, which is why everything tests this first.
+float cloudShape(vec3 p) {
+  float fromEdge = length(vec2(p.x, p.z - kEdgeZ) * vec2(0.30, 0.85));
+  float shape = exp(-fromEdge * 0.55) * exp(-max(-p.y, 0.0) * 0.30);
+  shape *= smoothstep(kEdgeZ - kCloudNear, kEdgeZ - kCloudNear + 0.9, p.z);
+  shape *= 1.0 - smoothstep(kEdgeZ - 0.15, kEdgeZ + 0.05, p.z);
+  shape *= smoothstep(kCloudTop + 0.4, kCloudTop - 0.5, p.y);
+  return shape;
+}
+
+float cloudDensity(vec3 p, vec3 drift) {
+  float shape = cloudShape(p);
+  if (shape < 0.012) return 0.0;
+
+  // Drift: a uniform translation of the sample point, so the whole volume
+  // moves together without shearing. Slower vertically than horizontally, so
+  // it rolls rather than slides.
+  // The threshold below is smoothstep(0.46, ...), so density is exactly zero
+  // for d <= 0.46. With d = base * 0.75 + detail * 0.25 and detail at most
+  // 0.96875, the largest the detail term can contribute is 0.242 — so unless
+  // base reaches (0.46 - 0.242) / 0.75 = 0.29, this sample is zero whatever
+  // the detail octave turns out to be. Not an approximation: below that,
+  // computing it changes nothing.
+  const float kBaseNeeded = 0.29;
+  float base = fbm3Early(p * 0.85 + drift, kBaseNeeded);
+  if (base < kBaseNeeded) return 0.0;
+
+  // A second, finer octave set advected differently gives the billowing that
+  // one scale alone never has. Full spectrum: cutting octaves visibly
+  // cheapened the look, so the saving comes from skipping work that cannot
+  // affect the result rather than from doing it worse.
+  float detail = fbm3(p * 2.7 - drift * 1.7 + 17.3);
+  float d = base * 0.75 + detail * 0.25;
+
+  return clamp(smoothstep(0.46, 0.88, d) * shape, 0.0, 1.0);
+}
+
+/// Marches the medium and returns premultiplied colour and alpha.
+vec4 flyingEnergy(vec3 ro, vec3 rd, float tMax) {
+  // Slab bounds on z, since the volume hangs in front of the panel.
+  float zNear = kEdgeZ - kCloudNear;
+  float zFar = kEdgeZ;
+  if (abs(rd.z) < 1e-5) return vec4(0.0);
+  float ta = (zNear - ro.z) / rd.z;
+  float tb = (zFar - ro.z) / rd.z;
+  float t0 = max(min(ta, tb), 0.0);
+  float t1 = min(max(ta, tb), tMax);
+  if (t1 <= t0) return vec4(0.0);
+
+  // WHOLE-RAY REJECTION. Probe the analytic envelope at a few points along
+  // the ray first: if the cloud cannot exist anywhere on it, skip the march
+  // entirely. Six cheap evaluations against 28 expensive ones, and it cannot
+  // change the image because density is exactly zero wherever the envelope is
+  // below this threshold anyway.
+  // Also NARROW the span to the part of the ray where the cloud can exist.
+  // Keeping the step SIZE fixed and marching fewer of them over a shorter
+  // span is free: the sampling density is unchanged, so the image is
+  // unchanged, but a ray that only clips the edge of the volume stops paying
+  // for the empty length on either side.
+  const int kMaxSteps = 28;
+  float stepSize = (t1 - t0) / float(kMaxSteps);
+
+  float first = t1;
+  float last = t0;
+  float peak = 0.0;
+  for (int i = 0; i < 8; i++) {
+    float t = mix(t0, t1, (float(i) + 0.5) / 8.0);
+    float sh = cloudShape(ro + rd * t);
+    peak = max(peak, sh);
+    if (sh >= 0.012) {
+      first = min(first, t);
+      last = max(last, t);
+    }
+  }
+  if (peak < 0.012) return vec4(0.0);
+
+  // One probe interval of margin either side, so nothing between probes is
+  // clipped.
+  float margin = (t1 - t0) / 8.0;
+  t0 = max(t0, first - margin);
+  t1 = min(t1, last + margin);
+
+  int kSteps = int(clamp(ceil((t1 - t0) / stepSize), 1.0, float(kMaxSteps)));
+
+  // Hoisted: it depends only on time, not on the sample point.
+  vec3 drift = vec3(uTime * 0.035, uTime * 0.012, uTime * -0.02);
+
+  // Jitter the start per pixel so the fixed step count does not band. Same
+  // interleaved gradient noise the shadows use.
+  float jitter = ign(FlutterFragCoord().xy);
+
+  vec3 accum = vec3(0.0);
+  float transmittance = 1.0;
+
+  vec3 lit = vec3(0.42, 0.66, 1.00) * 1.2 + kAccent * 0.10;
+
+  for (int i = 0; i < kMaxSteps; i++) {
+    if (i >= kSteps) break;
+    float t = t0 + (float(i) + jitter) * stepSize;
+    vec3 p = ro + rd * t;
+    float d = cloudDensity(p, drift);
+    if (d > 0.001) {
+      // Brighter nearer the source, as if lit from the cube rather than
+      // uniformly emissive.
+      float toSource = length(p - kCubeOrigin);
+      float energy = exp(-toSource * 0.22);
+      float sigma = d * 1.9;
+      float absorbed = 1.0 - exp(-sigma * stepSize);
+      accum += transmittance * absorbed * lit * energy;
+      transmittance *= 1.0 - absorbed;
+      if (transmittance < 0.02) break;
+    }
+  }
+  return vec4(accum, 1.0 - transmittance);
+}
+
 // ── PBR, following flutter_scene/shaders/pbr.glsl ───────────────────────────
 
 vec3 FresnelSchlick(float cosTheta, vec3 f0) {
@@ -497,6 +664,13 @@ vec3 tableNormal(vec3 p) {
 
 /// Sphere-traces the table. Returns the hit distance, or -1.
 float tableTrace(vec3 ro, vec3 rd) {
+  // Cheap rejection FIRST. The table lives between y = -kDropDepth and y = 0.
+  // A ray starting above it and heading up can never reach it — and that is
+  // every sky pixel, each of which was previously marching all 96 steps before
+  // giving up.
+  if (ro.y > 0.0 && rd.y >= 0.0) return -1.0;
+  if (ro.y < -kDropDepth && rd.y <= 0.0) return -1.0;
+
   float t = 0.02;
   for (int i = 0; i < 96; i++) {
     vec3 p = ro + rd * t;
@@ -994,6 +1168,14 @@ void main() {
 
   if (cov > 0.0) {
     col = mix(col, ACESToneMap(sum, 1.25), cov);
+  }
+
+  // The flying energy sits in FRONT of everything solid here — the slab hangs
+  // between the camera and the panel — so it composites last, over the cube
+  // as well as the surface.
+  if (uClouds > 0.0) {
+    vec4 clouds = flyingEnergy(kEye, rd, 1e4);
+    col = col * (1.0 - clouds.a * uClouds) + clouds.rgb * uClouds;
   }
 
   fragColor = vec4(col, 1.0);
