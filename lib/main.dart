@@ -1,36 +1,32 @@
 /// Portfolio — Dmitry Sevryukov.
 ///
-/// Web only. This file is the app shell and nothing else: routing, theme, and
-/// the page scaffold. Content lives under `lib/src/`.
+/// Web only. Routing, theme, and the single view that everything lives in.
 ///
-/// Current stage: skeleton. The routes exist and the URLs work; the pages are
-/// placeholders.
+/// THERE ARE NO PAGES. Every route builds the same [WorldView]; the URL only
+/// says which location the camera should travel to. That is why every route
+/// here uses a `NoTransitionPage` — a page transition would fight the travel
+/// animation, and there is nothing to transition between anyway.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/stats_overlay.dart';
+import 'package:portfolio/src/world/locations.dart';
+import 'package:portfolio/src/world/world_view.dart';
 
 void main() => runApp(const PortfolioApp());
 
-/// The site's routes.
-///
-/// These are real URLs, which is the whole reason a router is here: `/work` has
-/// to survive a refresh, work with the back button, and be pasteable into a CV.
+/// Routes are generated from the location list, so a stop can never exist
+/// without a URL and a URL can never point at a stop that isn't there.
 final GoRouter _router = GoRouter(
   routes: [
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const _Placeholder(title: 'Home'),
-    ),
-    GoRoute(
-      path: '/work',
-      builder: (context, state) => const _Placeholder(title: 'Work'),
-    ),
-    GoRoute(
-      path: '/about',
-      builder: (context, state) => const _Placeholder(title: 'About'),
-    ),
+    for (final location in kLocations)
+      GoRoute(
+        path: location.path,
+        pageBuilder: (context, state) =>
+            const NoTransitionPage<void>(child: WorldView()),
+      ),
   ],
 );
 
@@ -42,9 +38,13 @@ class PortfolioApp extends StatelessWidget {
     title: 'Dmitry Sevryukov — Developer',
     debugShowCheckedModeBanner: false,
     routerConfig: _router,
+    // Material supplies routing, gestures and text plumbing only. Nothing
+    // visible comes from its widget vocabulary — AppBar, Card and
+    // NavigationRail read as "an Android app in a browser", which is the one
+    // impression a portfolio cannot afford.
     theme: ThemeData(
       brightness: Brightness.dark,
-      scaffoldBackgroundColor: const Color(0xFF0B0B0F),
+      scaffoldBackgroundColor: Palette.bg,
       useMaterial3: true,
     ),
     builder: (context, child) => Stack(
@@ -56,48 +56,6 @@ class PortfolioApp extends StatelessWidget {
         // real deployment.
         if (statsRequested) const StatsOverlay(),
       ],
-    ),
-  );
-}
-
-/// Stands in until the real pages exist. Deliberately plain: the layout and
-/// type decisions are not made yet, and a half-designed placeholder would only
-/// anchor them badly.
-class _Placeholder extends StatelessWidget {
-  const _Placeholder({required this.title});
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    body: Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            title,
-            // Keyed so a test can tell the heading from the nav button of the
-            // same name.
-            key: const Key('page-title'),
-            style: Theme.of(context).textTheme.headlineMedium,
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            children: [
-              for (final route in const [
-                ('Home', '/'),
-                ('Work', '/work'),
-                ('About', '/about'),
-              ])
-                TextButton(
-                  onPressed: () => context.go(route.$2),
-                  child: Text(route.$1),
-                ),
-            ],
-          ),
-        ],
-      ),
     ),
   );
 }

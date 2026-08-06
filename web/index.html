@@ -38,11 +38,18 @@
 
   <style>
     /* Matches the app background so there is no white flash before the first
-       frame, and no bounce past the edges on iOS. */
+       frame, and no bounce past the edges on iOS.
+
+       `overflow: hidden` is load-bearing, not tidiness: the site is one fixed
+       viewport that never scrolls — only the content panels scroll, inside
+       themselves. Because the document never scrolls, mobile Safari never
+       collapses its URL bar, so the viewport height stays constant and the
+       whole class of jumping-layout bugs cannot happen. */
     html, body {
       margin: 0;
       padding: 0;
       height: 100%;
+      overflow: hidden;
       background: #0B0B0F;
       overscroll-behavior: none;
     }
