@@ -34,8 +34,9 @@ uniform float uVelocity;  // locations per second, drives the smear
 // Scene placement
 uniform vec2 uCubeCenter;  // where the cube's world origin lands, in pixels
 uniform float uCubeUnit;   // pixels per world unit at the image plane
-uniform float uCubeGlow;   // light the cube throws onto the background
+uniform float uCubeGlow;   // reserved; kept so the indices below do not move
 uniform float uSurface;    // 0 = no surface, 1 = full glass
+uniform float uSky;        // 0 = flat ground colour, 1 = the field
 
 out vec4 fragColor;
 
@@ -62,6 +63,22 @@ const float kLightRadius = 0.85;
 // it and the camera, so the panel descends into the lower half of the frame
 // where the statement sits.
 const float kEdgeZ = -0.95;
+
+// The FAR edge of the ledge, behind the cube, and the thickness of the sheet
+// there. A cut edge is where light trapped inside the glass escapes, so it is
+// the brightest part of any glass table — and the natural place for the
+// energy to enter later.
+const float kBackZ = 3.1;
+const float kEdgeThickness = 0.055;
+
+// The table as SOLID GEOMETRY rather than intersecting half-planes.
+// kRound is the radius of every edge; kFillet is the smoothing at the inner
+// corner where the ledge meets the drop.
+const float kTableHalfX = 7.0;   // wide enough to leave the frame
+const float kSlab = 0.075;       // sheet thickness
+const float kDropDepth = 6.0;    // how far the panel descends
+const float kRound = 0.028;
+const float kFillet = 0.09;
 
 const float kIor = 1.5;             // glass
 const float kGlassThickness = 0.05;
@@ -123,6 +140,76 @@ vec3 fieldColor(vec2 uv, float aspect, vec2 fragCoord) {
   col += vec3(0.062, 0.062, 0.075) * rim;
   col += (hash(fragCoord + fract(uTime) * 91.7) - 0.5) * 0.022;
   return mix(col, kBase, smoothstep(0.42, 1.0, uv.y) * 0.72);
+}
+
+/// One advected sample of the energy field.
+///
+/// [advect] is how far the sample point has been slid outward along its own
+/// radial direction. Sliding is what makes the pattern move away from the
+/// cube — and also what shears it, because neighbouring pixels at different
+/// angles slide different ways. Bounding how far any one sample is ever slid
+/// is what keeps it cloudy; see surfaceEnergy.
+float energyLayer(vec2 surf, vec2 dir, float advect) {
+  vec2 q = surf * 0.85 - dir * advect;
+  vec2 w = vec2(fbm(q + vec2(0.0, advect * 0.25)), fbm(q + vec2(4.7, 2.1)));
+  return fbm(q + 2.6 * w);
+}
+
+/// The energy the cube emits, travelling the surface and pouring over the edge.
+///
+/// Sampled in CONTINUOUS surface coordinates, deliberately not polar — an
+/// angle from `atan` has a branch cut that showed as a hard seam radiating
+/// along the negative-x axis.
+///
+/// FLOW-MAP ADVECTION. Sliding a sample outward without limit stretches the
+/// noise into long radial fibres, because each pixel slides along its own
+/// direction. So two copies are advected half a cycle out of phase and
+/// cross-faded: each is only ever slid up to half a cycle before a fresh one
+/// replaces it, and the weight is zero exactly when a copy resets. The result
+/// keeps moving outward but never accumulates stretch — it stays cloud.
+vec3 surfaceEnergy(vec3 p, vec3 n) {
+  // Unroll the step into one flat sheet. On the ledge that is just (x, z);
+  // past the front edge, falling by |y| keeps walking in the same direction,
+  // so the two agree exactly at the lip and the flow pours over.
+  vec2 onLedge = p.xz;
+  vec2 onDrop = vec2(p.x, kEdgeZ - max(-p.y, 0.0));
+
+  float wTop = clamp(n.y, 0.0, 1.0);
+  float wDrop = clamp(-n.z, 0.0, 1.0);
+  float total = max(wTop + wDrop, 1e-4);
+  vec2 surf = (onLedge * wTop + onDrop * wDrop) / total;
+
+  float travelled = length(surf);
+  vec2 dir = travelled > 1e-4 ? surf / travelled : vec2(1.0, 0.0);
+
+  // How far a copy travels before it is retired, and how long that takes.
+  const float kCycleDistance = 1.15;
+  const float kCyclePeriod = 5.0;
+
+  float phase = uTime / kCyclePeriod;
+  float pa = fract(phase);
+  float pb = fract(phase + 0.5);
+
+  float a = energyLayer(surf, dir, pa * kCycleDistance);
+  float b = energyLayer(surf, dir, pb * kCycleDistance);
+
+  // Triangle weight: 0 when copy A has just reset, 1 when B has.
+  float blend = abs(1.0 - 2.0 * pa);
+  float f = mix(a, b, blend);
+
+  // Decays with distance travelled, so the cube is unambiguously the source.
+  // Slower decay reaches further across the ledge and further down the panel.
+  float emit = exp(-travelled * 0.18) * (total > 0.05 ? 1.0 : 0.0);
+
+  // Cooler than the sky field, which is warm from the accent. Same family,
+  // clearly a different substance.
+  vec3 tint = vec3(0.30, 0.58, 1.00) * 1.15 + kAccent * 0.12;
+
+  // A LOWER threshold turns more of the noise range into visible energy, so
+  // the clouds are broader rather than only their brightest peaks showing.
+  // Raising brightness alone would just blow out the peaks and leave the rest
+  // dark, which reads as harsher, not brighter.
+  return tint * smoothstep(0.28, 0.88, f) * emit * 1.7;
 }
 
 // ── PBR, following flutter_scene/shaders/pbr.glsl ───────────────────────────
@@ -187,6 +274,63 @@ vec3 ACESToneMap(vec3 color, float exposure) {
   color = RRTAndODTFit(color);
   color = outputMat * color;
   return clamp(color, 0.0, 1.0);
+}
+
+// ── The table, as a signed distance field ───────────────────────────────────
+//
+// Half-planes meet at hard 90-degree corners and there is no way to round
+// them after the fact — the edge is where two surfaces stop, not a surface in
+// itself. An SDF has actual geometry there: rounding is subtracting a radius
+// from the distance, and the normal comes from the field's gradient, so it
+// turns smoothly through the corner instead of flipping.
+
+float sdRoundBox(vec3 p, vec3 b, float r) {
+  vec3 q = abs(p) - b + r;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+}
+
+/// Polynomial smooth minimum — the union with a fillet at the join.
+float smin(float a, float b, float k) {
+  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+float tableSdf(vec3 p) {
+  // The ledge: a slab whose top face is y = 0, running from the front edge
+  // back to the cut edge.
+  vec3 ledgeCentre = vec3(0.0, -kSlab * 0.5, (kEdgeZ + kBackZ) * 0.5);
+  vec3 ledgeHalf = vec3(kTableHalfX, kSlab * 0.5, (kBackZ - kEdgeZ) * 0.5);
+  float dLedge = sdRoundBox(p - ledgeCentre, ledgeHalf, kRound);
+
+  // The drop: a panel hanging from the front edge, its face toward the camera.
+  vec3 dropCentre = vec3(0.0, -kDropDepth * 0.5, kEdgeZ - kSlab * 0.5);
+  vec3 dropHalf = vec3(kTableHalfX, kDropDepth * 0.5, kSlab * 0.5);
+  float dDrop = sdRoundBox(p - dropCentre, dropHalf, kRound);
+
+  return smin(dLedge, dDrop, kFillet);
+}
+
+vec3 tableNormal(vec3 p) {
+  const vec2 e = vec2(6e-4, 0.0);
+  return normalize(vec3(
+    tableSdf(p + e.xyy) - tableSdf(p - e.xyy),
+    tableSdf(p + e.yxy) - tableSdf(p - e.yxy),
+    tableSdf(p + e.yyx) - tableSdf(p - e.yyx)
+  ));
+}
+
+/// Sphere-traces the table. Returns the hit distance, or -1.
+float tableTrace(vec3 ro, vec3 rd) {
+  float t = 0.02;
+  for (int i = 0; i < 96; i++) {
+    vec3 p = ro + rd * t;
+    float d = tableSdf(p);
+    // Tolerance scales with distance so far-away pixels do not march forever.
+    if (d < 0.0006 * t) return t;
+    t += d;
+    if (t > 60.0) break;
+  }
+  return -1.0;
 }
 
 // ── Intersection ────────────────────────────────────────────────────────────
@@ -361,45 +505,39 @@ vec3 shadeCubeRay(vec3 rd, float spin, out float hit) {
 /// because it needs intersection only, not shading.
 vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
                    vec2 uvScreen, float aspect, float rotation) {
-  vec3 background = fieldColor(uvScreen, aspect, fragCoord);
-
-  // THE STEP. Two panels, not one:
+  // THE FIELD IS THE SKY, and only the sky.
   //
-  //   ────────┐        the LEDGE, horizontal, the cube rests on it
-  //           │        the DROP, vertical, descending from its front edge
-  //
-  // The ledge is bounded at x = kEdgeX; past that edge the surface turns and
-  // falls away. Both are the same glass; only their orientation differs.
-  float tPlane = -1.0;
-  vec3 n = vec3(0.0, 1.0, 0.0);
-
-  // Ledge: y = 0, only BEHIND the front edge, and NOT under the cube.
-  //
-  // The cube's base sits at exactly y = 0, coplanar with this plane. That is a
-  // degenerate configuration: along the contact, precision decides per-pixel
-  // whether a ray hits the cube's bottom face or the floor, which shows up as
-  // a broken bright line at the seam. Floor inside the footprint is never
-  // visible anyway — the cube is standing on it — so it is rejected.
-  if (abs(rd.y) > 1e-5) {
-    float t = -ro.y / rd.y;
-    vec3 hp = ro + rd * t;
-    vec3 local = rotY(-spin) * (hp - kCubeOrigin);
-    bool underCube = max(abs(local.x), abs(local.z)) < kHalfSize;
-    if (t > 0.0 && hp.z > kEdgeZ && !underCube) {
-      tPlane = t;
-      n = vec3(0.0, 1.0, 0.0);
-    }
+  // It used to fill the whole frame, so the table sat on top of clouds. Now it
+  // renders only where a ray passes ABOVE the table's far cut edge — the space
+  // beyond where the surface ends. Everything nearer than that is flat ground
+  // colour. The shader itself is untouched; only where it is allowed to appear
+  // has changed.
+  bool beyondEdge;
+  if (rd.z > 1e-5) {
+    // Does this ray clear the far edge on its way out?
+    float tBack = (kBackZ - ro.z) / rd.z;
+    beyondEdge = (ro.y + rd.y * tBack) > 0.0;
+  } else {
+    // Not travelling away from the camera: only upward rays escape.
+    beyondEdge = rd.y > 0.0;
   }
+  vec3 background = (beyondEdge && uSky > 0.0)
+      ? mix(kBase, fieldColor(uvScreen, aspect, fragCoord), uSky)
+      : kBase;
 
-  // Drop: the panel at z = kEdgeZ, descending below the ledge, with its face
-  // turned toward the camera. This is the surface the statement sits in front
-  // of — a backdrop, not a side wall running away from the viewer.
-  if (abs(rd.z) > 1e-5) {
-    float t = (kEdgeZ - ro.z) / rd.z;
-    if (t > 0.0 && (ro.y + rd.y * t) < 0.0 && (tPlane < 0.0 || t < tPlane)) {
-      tPlane = t;
-      n = vec3(0.0, 0.0, -1.0);
-    }
+  // THE TABLE, sphere-traced as one solid with rounded edges. The old version
+  // intersected three half-planes, which meet at hard 90-degree corners that
+  // cannot be rounded after the fact.
+  float tPlane = tableTrace(ro, rd);
+  vec3 n = vec3(0.0, 1.0, 0.0);
+  float isCutEdge = 0.0;
+  if (tPlane > 0.0) {
+    vec3 hitP = ro + rd * tPlane;
+    n = tableNormal(hitP);
+    // The cut edge is the far end of the sheet: the band of surface whose
+    // normal has turned away from straight up, near the back of the ledge.
+    isCutEdge = smoothstep(0.55, 0.9, 1.0 - abs(n.y)) *
+                smoothstep(kBackZ - 0.22, kBackZ - 0.02, hitP.z);
   }
 
   bool hitPlane = tPlane > 0.0 && uSurface > 0.0;
@@ -466,11 +604,57 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     // never being hit. This makes the answer unambiguous: if a grey floor
     // with a shadow on it appears, the scene is correct and the glass was
     // merely too subtle. Revert to the glass branch below once confirmed.
+    // The cut edge glows: light that has been travelling inside the sheet by
+    // total internal reflection escapes where the glass is cut. On a real
+    // glass table this is by far the brightest part of it.
+
     vec3 diagnostic = vec3(0.52, 0.53, 0.58);
     diagnostic *= mix(0.06, 1.0, shadow);   // the cast shadow
     diagnostic *= mix(0.10, 1.0, ao);       // the contact occlusion
     diagnostic += reflected * fres * 0.6;   // still shows the reflection
+
+    // The energy: across the ledge, over the front edge, down the panel.
+    diagnostic += surfaceEnergy(p, n);
+
+    // The cut edge glows: light travelling inside the sheet by total internal
+    // reflection escapes where the glass is cut. Blended by how far the
+    // normal has turned off vertical, so it follows the ROUNDED edge rather
+    // than switching on at a hard boundary.
+    vec3 glow = vec3(0.80, 0.86, 1.0) * 2.4 + kAccent * 0.35;
+    diagnostic = mix(diagnostic, ACESToneMap(glow, 1.25), isCutEdge);
     return mix(background, diagnostic, presence);
+
+    // ── THE GLASS MATERIAL — parked, not deleted ─────────────────────────────
+    //
+    // Swap the block above for this to go back to actual glass. Every value it
+    // needs is already computed above; this is the line that assembles them,
+    // and it is the one that got lost when the diagnostic replaced it.
+    //
+    // ENERGY CONSERVING: reflect OR transmit, never both added. `fres` is
+    // ~4% looking straight down at the sheet and rises to 1 at grazing, so
+    // most of what you see through it is the transmitted background.
+    //
+    //   vec3 surface = mix(transmitted, reflected + second, fres);
+    //
+    // The shadow darkens what passes through; the occlusion darkens the
+    // ambient part.
+    //
+    //   surface *= mix(0.18, 1.0, shadow) * mix(0.25, 1.0, ao);
+    //
+    // ⚠️ The energy must move INSIDE this composite rather than being added
+    // on top as it is above — light inside the sheet is transmitted, so it
+    // belongs with the transmitted term, not painted over the surface:
+    //
+    //   surface += surfaceEnergy(p, n) * (1.0 - fres);
+    //
+    // Then the cut edge and the presence fade as above:
+    //
+    //   surface = mix(surface, ACESToneMap(glow, 1.25), isCutEdge);
+    //   return mix(background, surface, presence);
+    //
+    // Expect it to be nearly INVISIBLE on its own — that is what clean glass
+    // on a dark ground does, and it is why the diagnostic exists. What makes
+    // it readable is the cut edge, the energy, and eventually some dirt.
   }
 
   return background;

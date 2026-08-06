@@ -113,8 +113,12 @@ class _ScenePainter extends CustomPainter {
       ..setFloat(5, cubeX)
       ..setFloat(6, cubeY)
       ..setFloat(7, unit)
-      ..setFloat(8, 0)
-      ..setFloat(9, 1);
+      // Indices follow scene.frag's declaration order, including uniforms
+      // that are currently unused — the layout keeps them, so deleting one
+      // silently shifts every index after it.
+      ..setFloat(8, 0)   // uCubeGlow
+      ..setFloat(9, 1)   // uSurface
+      ..setFloat(10, 0); // uSky — off; the shader is still compiled in
     canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
   }
 
