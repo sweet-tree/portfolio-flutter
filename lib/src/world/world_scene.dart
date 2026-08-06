@@ -35,11 +35,26 @@ const double kCubeSize = 0.26;
 /// a desktop ran 65 FPS at 0.7 while an iPhone 11 ran 25. The phone is drawing
 /// roughly a fifth of the pixels and still managing a third of the frame rate,
 /// because its GPU is simply far weaker. So the scale is chosen at runtime.
-const List<double> kSceneScales = [1.0, 0.85, 0.7, 0.58, 0.48, 0.38, 0.3];
+/// The quality ladder, best first: (resolution scale, volumetric quality).
+///
+/// RESOLUTION IS GIVEN UP LAST. Low resolution ruins the cube's edges, which
+/// are the most carefully made thing in the scene; the volumetric is soft by
+/// nature and loses very little from a coarser march. So each rung trades the
+/// cloud's step count first and only drops pixels when that is exhausted.
+const List<({double scale, double quality})> kQualityLadder = [
+  (scale: 1.00, quality: 1.00),
+  (scale: 0.85, quality: 1.00),
+  (scale: 0.85, quality: 0.65),
+  (scale: 0.70, quality: 0.65),
+  (scale: 0.70, quality: 0.35),
+  (scale: 0.58, quality: 0.35),
+  (scale: 0.58, quality: 0.00),
+  (scale: 0.45, quality: 0.00),
+];
 
-/// Where a new session starts. Middle of the range, so a weak device needs
-/// two steps down rather than five, and a strong one two steps up.
-const int kInitialScaleStep = 2;
+/// Where a new session starts — middle of the ladder, so a weak device steps
+/// down a few rungs rather than a dozen.
+const int kInitialScaleStep = 3;
 
 /// Step down below this, up above the other. The gap between them is the
 /// hysteresis that stops it oscillating: dropping the resolution raises the
@@ -68,7 +83,8 @@ class _WorldSceneState extends State<WorldScene>
   Duration _windowStart = Duration.zero;
   int _goodWindows = 0;
 
-  double get _scale => kSceneScales[_step];
+  double get _scale => kQualityLadder[_step].scale;
+  double get _quality => kQualityLadder[_step].quality;
 
   /// Chooses the resolution from the frame rate the device actually achieves.
   ///
@@ -91,7 +107,7 @@ class _WorldSceneState extends State<WorldScene>
     // on the lowest setting.
     if (elapsed.inMilliseconds < 2000) return;
 
-    if (fps < kScaleDownBelowFps && _step < kSceneScales.length - 1) {
+    if (fps < kScaleDownBelowFps && _step < kQualityLadder.length - 1) {
       _goodWindows = 0;
       _step++;
     } else if (fps > kScaleUpAboveFps && _step > 0) {
@@ -141,6 +157,7 @@ class _WorldSceneState extends State<WorldScene>
         shader: shader,
         time: _time,
         scale: _scale,
+        quality: _quality,
         camera: widget.camera.position,
         velocity: widget.camera.velocity,
       ),
@@ -154,6 +171,7 @@ class _ScenePainter extends CustomPainter {
     required this.shader,
     required this.time,
     required this.scale,
+    required this.quality,
     required this.camera,
     required this.velocity,
   });
@@ -161,6 +179,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader shader;
   final double time;
   final double scale;
+  final double quality;
   final double camera;
   final double velocity;
 
@@ -211,7 +230,8 @@ class _ScenePainter extends CustomPainter {
       ..setFloat(9, 1) // uSurface
       ..setFloat(10, 0) // uSky — off; the shader is still compiled in
       ..setFloat(11, 1) // uStars — space beyond the table
-      ..setFloat(12, 1); // uClouds — the flying volumetric energy
+      ..setFloat(12, 1) // uClouds — the flying volumetric energy
+      ..setFloat(13, quality); // uQuality — volumetric march budget
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
@@ -237,5 +257,6 @@ class _ScenePainter extends CustomPainter {
       old.time != time ||
       old.camera != camera ||
       old.velocity != velocity ||
-      old.scale != scale;
+      old.scale != scale ||
+      old.quality != quality;
 }

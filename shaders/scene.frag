@@ -39,6 +39,10 @@ uniform float uSurface;    // 0 = no surface, 1 = full glass
 uniform float uSky;        // 0 = flat ground colour, 1 = the field
 uniform float uStars;      // 0 = off, 1 = space beyond the table
 uniform float uClouds;     // 0 = off, 1 = the flying volumetric energy
+// 1 = full march, lower = fewer volumetric steps. Degrading the CLOUD is a
+// far better trade than degrading resolution: the cloud is soft by nature,
+// while the cube's edges are the thing low resolution ruins.
+uniform float uQuality;
 
 out vec4 fragColor;
 
@@ -499,7 +503,11 @@ vec4 flyingEnergy(vec3 ro, vec3 rd, float tMax) {
   // unchanged, but a ray that only clips the edge of the volume stops paying
   // for the empty length on either side.
   const int kMaxSteps = 28;
-  float stepSize = (t1 - t0) / float(kMaxSteps);
+  // Step COUNT scales with quality; step SIZE grows to match, so the volume
+  // is still integrated over its whole depth — it just gets coarser rather
+  // than shorter.
+  int budget = int(clamp(floor(mix(10.0, 28.0, uQuality)), 6.0, 28.0));
+  float stepSize = (t1 - t0) / float(budget);
 
   float first = t1;
   float last = t0;
@@ -521,7 +529,7 @@ vec4 flyingEnergy(vec3 ro, vec3 rd, float tMax) {
   t0 = max(t0, first - margin);
   t1 = min(t1, last + margin);
 
-  int kSteps = int(clamp(ceil((t1 - t0) / stepSize), 1.0, float(kMaxSteps)));
+  int kSteps = int(clamp(ceil((t1 - t0) / stepSize), 1.0, float(budget)));
 
   // Hoisted: it depends only on time, not on the sample point.
   vec3 drift = vec3(uTime * 0.035, uTime * 0.012, uTime * -0.02);
