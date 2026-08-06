@@ -50,10 +50,17 @@ dev:
 build:
 	flutter build web --wasm --release
 
-# Serve the production build locally, with the same headers Cloudflare sends.
+# Serve the production build locally with caching OFF.
+#
+# NOT `python3 -m http.server`: it answers repeat requests with 304, so a
+# rebuilt main.dart.wasm or a rebuilt shader keeps serving the old bytes and a
+# refresh appears to do nothing. That cost us real time during shader work —
+# once far enough to conclude a uniform was not arriving when the build simply
+# had not reached the page. tool/serve.py sends no-store and strips the
+# conditional request headers.
 serve: build
 	@echo "http://localhost:8000"
-	@cd build/web && python3 -m http.server 8000 --bind 127.0.0.1
+	@python3 tool/serve.py 8000 build/web
 
 # Everything that must pass before a commit.
 check: analyze test

@@ -37,6 +37,7 @@ uniform float uCubeUnit;   // pixels per world unit at the image plane
 uniform float uCubeGlow;   // reserved; kept so the indices below do not move
 uniform float uSurface;    // 0 = no surface, 1 = full glass
 uniform float uSky;        // 0 = flat ground colour, 1 = the field
+uniform float uStars;      // 0 = off, 1 = space beyond the table
 
 out vec4 fragColor;
 
@@ -210,6 +211,181 @@ vec3 surfaceEnergy(vec3 p, vec3 n) {
   // Raising brightness alone would just blow out the peaks and leave the rest
   // dark, which reads as harsher, not brighter.
   return tint * smoothstep(0.28, 0.88, f) * emit * 1.7;
+}
+
+// ── Stars ───────────────────────────────────────────────────────────────────
+//
+// Sampled by RAY DIRECTION, not screen position. Stars are effectively at
+// infinity, so they belong to where you are looking — which also means there
+// is no 2D parameterisation, and therefore no seam of the kind the polar
+// coordinates gave the surface energy.
+//
+// Cells in 3D: each cell may hold one star, jittered inside itself. Only a
+// small neighbourhood matters because a star is tiny next to a cell, so this
+// is 8 lookups per layer rather than 27.
+
+float hash31(vec3 p) {
+  p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+/// 3D value noise, for structure that lives on the sphere of directions.
+///
+/// The band and its dust have to be sampled in 3D: any 2D parameterisation of
+/// a sphere has a seam or a pole, and a dust lane crossing one would tear.
+float noise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
+  float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+  float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+  float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+  float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+  float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+  float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+  float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
+  return mix(
+    mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+    mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
+    f.z
+  );
+}
+
+float fbm3(vec3 p) {
+  float sum = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 5; i++) {
+    sum += amp * noise3(p);
+    p *= 2.07;
+    amp *= 0.5;
+  }
+  return sum;
+}
+
+// The galactic plane's pole.
+//
+// ⚠️ CHOSEN AGAINST THE VISIBLE CONE, not by taste. The sky here is a narrow
+// strip of directions passing just above the table's back edge — roughly
+// (-0.53, 0.05, 0.85). For the band to cross that strip its POLE has to be
+// close to perpendicular to it. The first value was ~25 degrees off, so all
+// that showed was the band's faintest outer falloff and it read as nothing.
+// This one is within a few degrees of perpendicular, and tilted so the band
+// runs diagonally rather than level with the table.
+const vec3 kGalacticPole = vec3(-0.72, 0.55, -0.42);
+
+/// The Milky Way: a diffuse glow AND a star-density multiplier.
+///
+/// These are the same thing physically — the band is bright BECAUSE the stars
+/// are dense there — so returning both from one function is what keeps them
+/// consistent. A separately painted stripe with an evenly scattered star field
+/// on top is the version that always looks fake.
+///
+/// `rgb` is the diffuse light of unresolved stars; `a` multiplies how many
+/// cells hold a resolved star.
+vec4 galaxyBand(vec3 d) {
+  vec3 pole = normalize(kGalacticPole);
+  // 0 at the poles, 1 on the plane.
+  float onPlane = 1.0 - abs(dot(d, pole));
+
+  // The band is not a clean stripe: its edge is ragged and its width varies.
+  float ragged = fbm3(d * 2.6) - 0.5;
+  float band = smoothstep(0.62, 0.995, onPlane + ragged * 0.22);
+
+  // Structure WITHIN the band — clumps of brightness at two scales.
+  float clumps = fbm3(d * 5.5 + 11.3);
+  float fine = fbm3(d * 14.0 + 41.7);
+
+  // DUST LANES. Dark, high-contrast, running along the band — the feature
+  // that most says "Milky Way" rather than "glowing smear". They subtract,
+  // and they also hide the stars behind them.
+  float dust = smoothstep(0.42, 0.72, fbm3(d * vec3(7.0, 22.0, 7.0) + 61.1));
+  float lanes = 1.0 - dust * 0.85;
+
+  float density = band * (0.35 + 0.65 * clumps) * lanes;
+
+  // Cooler at the edges, warmer through the core, as it actually appears.
+  vec3 cool = vec3(0.42, 0.52, 0.85);
+  vec3 warm = vec3(0.95, 0.86, 0.72);
+  vec3 tint = mix(cool, warm, clamp(clumps * 0.9 + fine * 0.3, 0.0, 1.0));
+
+  vec3 glow = tint * density * 0.38;
+
+  // Star density: many more resolved stars inside the band, and the dust
+  // lanes hide them exactly where they darken the glow.
+  float starDensity = 1.0 + band * 2.6 * lanes;
+  return vec4(glow, starDensity);
+}
+
+vec3 starLayer(vec3 dir, float density, float size, float brightness,
+               float starDensity) {
+  vec3 p = dir * density;
+  vec3 base = floor(p);
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      for (int k = 0; k < 2; k++) {
+        vec3 cell = base + vec3(float(i), float(j), float(k));
+        float h = hash31(cell);
+        // Most cells are empty — a sky where every cell has a star reads as
+        // noise, not as stars.
+        // The band raises how many cells hold a star; dust lanes lower it.
+        if (h < 1.0 - (1.0 - 0.86) * starDensity) continue;
+
+        vec3 jitter = vec3(
+          hash31(cell + 1.7), hash31(cell + 3.3), hash31(cell + 5.9)
+        );
+        float d = length(p - (cell + jitter));
+        float core = exp(-(d * d) / (size * size));
+
+        // Colour temperature: real star fields are not white. Blue-white
+        // through to warm, which is most of what makes them read as stars.
+        float temp = hash31(cell + 9.1);
+        vec3 tint = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.90, 0.74), temp);
+
+        // Magnitude varies a lot — a few bright ones carry the impression.
+        float mag = pow(fract(h * 37.0), 1.6) * 0.85 + 0.15;
+
+        // TWINKLE. Each star gets its own rate and phase, so the field
+        // scintillates instead of pulsing as one. Rates are deliberately
+        // uneven — a field that breathes in unison reads as an effect.
+        float rate = 0.5 + 2.4 * hash31(cell + 13.7);
+        float phase = hash31(cell + 21.3) * 6.2831853;
+        mag *= 0.55 + 0.45 * sin(uTime * rate + phase);
+        acc += tint * core * mag * brightness;
+      }
+    }
+  }
+  return acc;
+}
+
+vec3 starsColor(vec3 dir) {
+  // THE SKY TURNS. Sampling by direction means rotating the direction rotates
+  // the whole field rigidly — stars keep their relationships instead of
+  // sliding past each other, which is what makes it read as one sky moving
+  // rather than a scrolling texture.
+  //
+  // Two terms: a slow constant drift so it is alive when nothing is
+  // happening, and a term tied to the camera's position in the world, so
+  // travelling between sections carries the sky with it.
+  float turn = uTime * 0.010 + uCamera * 0.085;
+  vec3 d = normalize(rotY(turn) * dir);
+
+  // The band first: its density multiplier feeds the star layers, so the
+  // resolved stars crowd where the diffuse glow is and thin out in the dust.
+  vec4 galaxy = galaxyBand(d);
+
+  // Three densities so the field has depth rather than one flat scatter.
+  vec3 c = starLayer(d, 42.0, 0.105, 3.1, galaxy.a);
+  c += starLayer(d, 95.0, 0.070, 1.7, galaxy.a);
+  c += starLayer(d, 200.0, 0.048, 0.85, galaxy.a);
+
+  c += galaxy.rgb;
+
+  // Space is not black — a faint cool wash keeps it from reading as a hole in
+  // the screen.
+  return c + vec3(0.012, 0.014, 0.024);
 }
 
 // ── PBR, following flutter_scene/shaders/pbr.glsl ───────────────────────────
@@ -512,18 +688,32 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
   // beyond where the surface ends. Everything nearer than that is flat ground
   // colour. The shader itself is untouched; only where it is allowed to appear
   // has changed.
-  bool beyondEdge;
+  // How much of the sky this ray sees, as a SOFT amount rather than a yes/no.
+  //
+  // A hard boundary cuts straight through whatever star happens to sit on it,
+  // leaving visible half-discs along the table's back edge. Fading over a
+  // narrow band means a star near the edge dims out instead of being sliced.
+  float skyAmount;
   if (rd.z > 1e-5) {
-    // Does this ray clear the far edge on its way out?
+    // How far above the far edge does this ray pass?
     float tBack = (kBackZ - ro.z) / rd.z;
-    beyondEdge = (ro.y + rd.y * tBack) > 0.0;
+    skyAmount = smoothstep(-0.01, 0.16, ro.y + rd.y * tBack);
   } else {
     // Not travelling away from the camera: only upward rays escape.
-    beyondEdge = rd.y > 0.0;
+    skyAmount = rd.y > 0.0 ? 1.0 : 0.0;
   }
-  vec3 background = (beyondEdge && uSky > 0.0)
-      ? mix(kBase, fieldColor(uvScreen, aspect, fragCoord), uSky)
-      : kBase;
+  bool beyondEdge = skyAmount > 0.0;
+  vec3 background = kBase;
+  if (beyondEdge) {
+    // Both knobs live; neither replaces the other.
+    if (uSky > 0.0) {
+      background = mix(background, fieldColor(uvScreen, aspect, fragCoord),
+                       uSky);
+    }
+    if (uStars > 0.0) {
+      background = mix(background, starsColor(rd), uStars * skyAmount);
+    }
+  }
 
   // THE TABLE, sphere-traced as one solid with rounded edges. The old version
   // intersected three half-planes, which meet at hard 90-degree corners that

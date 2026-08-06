@@ -118,7 +118,8 @@ class _ScenePainter extends CustomPainter {
       // silently shifts every index after it.
       ..setFloat(8, 0)   // uCubeGlow
       ..setFloat(9, 1)   // uSurface
-      ..setFloat(10, 0); // uSky — off; the shader is still compiled in
+      ..setFloat(10, 0)  // uSky — off; the shader is still compiled in
+      ..setFloat(11, 1); // uStars — space beyond the table
     canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
   }
 
