@@ -25,12 +25,27 @@ const double kCubeY = 0.34;
 /// Cube size as a fraction of the viewport's shortest side.
 const double kCubeSize = 0.26;
 
-/// What fraction of full resolution the scene shader renders at.
+/// The resolutions the scene may render at, sharpest first.
 ///
-/// Fill rate is the cost model, so this is the one lever that reduces work
-/// without changing what the shader computes — 0.7 is roughly half the pixels.
-/// Only the shader softens; text is a separate layer at full resolution.
-const double kSceneScale = 0.7;
+/// Fill rate is the cost model, so pixel count is the one lever that reduces
+/// work without changing what the shader computes. Only the shader softens;
+/// text is a separate layer at full resolution.
+///
+/// A FIXED value cannot serve both machines: measured on the deployed build,
+/// a desktop ran 65 FPS at 0.7 while an iPhone 11 ran 25. The phone is drawing
+/// roughly a fifth of the pixels and still managing a third of the frame rate,
+/// because its GPU is simply far weaker. So the scale is chosen at runtime.
+const List<double> kSceneScales = [1.0, 0.85, 0.7, 0.58, 0.48, 0.38, 0.3];
+
+/// Where a new session starts. Middle of the range, so a weak device needs
+/// two steps down rather than five, and a strong one two steps up.
+const int kInitialScaleStep = 2;
+
+/// Step down below this, up above the other. The gap between them is the
+/// hysteresis that stops it oscillating: dropping the resolution raises the
+/// frame rate, which would otherwise immediately raise the resolution again.
+const double kScaleDownBelowFps = 50;
+const double kScaleUpAboveFps = 58;
 
 class WorldScene extends StatefulWidget {
   const WorldScene({required this.camera, super.key});
@@ -47,6 +62,49 @@ class _WorldSceneState extends State<WorldScene>
   late final Ticker _ticker;
   double _time = 0;
 
+  // ── Adaptive resolution ────────────────────────────────────────────────────
+  int _step = kInitialScaleStep;
+  int _frames = 0;
+  Duration _windowStart = Duration.zero;
+  int _goodWindows = 0;
+
+  double get _scale => kSceneScales[_step];
+
+  /// Chooses the resolution from the frame rate the device actually achieves.
+  ///
+  /// Asymmetric on purpose: one bad window steps down immediately, but
+  /// stepping back up needs several consecutive good ones. Dropping the
+  /// resolution is what RAISED the frame rate, so a symmetric rule would
+  /// climb straight back to a resolution it already knows is too expensive
+  /// and oscillate there.
+  void _adapt(Duration elapsed) {
+    _frames++;
+    final span = elapsed - _windowStart;
+    if (span.inMilliseconds < 500) return;
+
+    final fps = _frames * 1000 / span.inMilliseconds;
+    _frames = 0;
+    _windowStart = elapsed;
+
+    // Ignore the first couple of seconds — shader compilation and the first
+    // frames are not representative, and reacting to them lands every device
+    // on the lowest setting.
+    if (elapsed.inMilliseconds < 2000) return;
+
+    if (fps < kScaleDownBelowFps && _step < kSceneScales.length - 1) {
+      _goodWindows = 0;
+      _step++;
+    } else if (fps > kScaleUpAboveFps && _step > 0) {
+      _goodWindows++;
+      if (_goodWindows >= 6) {
+        _goodWindows = 0;
+        _step--;
+      }
+    } else {
+      _goodWindows = 0;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -54,6 +112,7 @@ class _WorldSceneState extends State<WorldScene>
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
     _ticker = createTicker((elapsed) {
+      _adapt(elapsed);
       setState(() => _time = elapsed.inMicroseconds / 1e6);
     });
     unawaited(_ticker.start());
@@ -81,6 +140,7 @@ class _WorldSceneState extends State<WorldScene>
       painter: _ScenePainter(
         shader: shader,
         time: _time,
+        scale: _scale,
         camera: widget.camera.position,
         velocity: widget.camera.velocity,
       ),
@@ -93,12 +153,14 @@ class _ScenePainter extends CustomPainter {
   const _ScenePainter({
     required this.shader,
     required this.time,
+    required this.scale,
     required this.camera,
     required this.velocity,
   });
 
   final ui.FragmentShader shader;
   final double time;
+  final double scale;
   final double camera;
   final double velocity;
 
@@ -120,8 +182,8 @@ class _ScenePainter extends CustomPainter {
     // close to invisible, which is why this is preferable to cutting the
     // march or the octaves.
     final low = Size(
-      (size.width * kSceneScale).roundToDouble(),
-      (size.height * kSceneScale).roundToDouble(),
+      (size.width * scale).roundToDouble(),
+      (size.height * scale).roundToDouble(),
     );
     if (low.isEmpty) return;
 
@@ -145,10 +207,10 @@ class _ScenePainter extends CustomPainter {
       // Indices follow scene.frag's declaration order, including uniforms
       // that are currently unused — the layout keeps them, so deleting one
       // silently shifts every index after it.
-      ..setFloat(8, 0)   // uCubeGlow
-      ..setFloat(9, 1)   // uSurface
-      ..setFloat(10, 0)  // uSky — off; the shader is still compiled in
-      ..setFloat(11, 1)  // uStars — space beyond the table
+      ..setFloat(8, 0) // uCubeGlow
+      ..setFloat(9, 1) // uSurface
+      ..setFloat(10, 0) // uSky — off; the shader is still compiled in
+      ..setFloat(11, 1) // uStars — space beyond the table
       ..setFloat(12, 1); // uClouds — the flying volumetric energy
 
     final recorder = ui.PictureRecorder();
@@ -172,5 +234,8 @@ class _ScenePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ScenePainter old) =>
-      old.time != time || old.camera != camera || old.velocity != velocity;
+      old.time != time ||
+      old.camera != camera ||
+      old.velocity != velocity ||
+      old.scale != scale;
 }
