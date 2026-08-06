@@ -33,5 +33,4 @@ flutter:
   # Fragment shaders are core Flutter — no package, no asset payload beyond the
   # compiled program itself.
   shaders:
-    - shaders/world.frag
-    - shaders/mark.frag
+    - shaders/scene.frag

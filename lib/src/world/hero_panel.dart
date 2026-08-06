@@ -17,7 +17,6 @@ import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
 import 'package:portfolio/src/world/locations.dart';
-import 'package:portfolio/src/world/mark_cube.dart';
 import 'package:portfolio/src/world/world_camera.dart';
 
 class HeroPanel extends StatelessWidget {
@@ -50,16 +49,8 @@ class HeroPanel extends StatelessWidget {
                   // The mark occupies the space above the statement — the
                   // space that was previously empty and, as you put it, was
                   // asking for something.
-                  // Painted across the WHOLE area, with the cube placed
-                  // inside it. A tight box clipped the halo into a hard
-                  // rectangle; given the full area the falloff finishes
-                  // before it reaches any edge.
-                  const Positioned.fill(
-                    child: MarkCube(
-                      center: Alignment(0, -0.42),
-                      sizeFraction: 0.52,
-                    ),
-                  ),
+                  // The cube is no longer a layer here — it lives in the
+                  // scene shader with the field, so that it can light it.
                   Align(
                     alignment: Alignment.bottomLeft,
                     child: ConstrainedBox(

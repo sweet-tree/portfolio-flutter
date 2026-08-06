@@ -20,7 +20,7 @@ import 'package:portfolio/src/design/type.dart';
 import 'package:portfolio/src/world/hero_panel.dart';
 import 'package:portfolio/src/world/locations.dart';
 import 'package:portfolio/src/world/world_camera.dart';
-import 'package:portfolio/src/world/world_field.dart';
+import 'package:portfolio/src/world/world_scene.dart';
 
 class WorldView extends StatefulWidget {
   const WorldView({super.key});
@@ -124,7 +124,7 @@ class _WorldViewState extends State<WorldView>
           animation: _camera,
           builder: (context, _) => Stack(
             children: [
-              Positioned.fill(child: WorldField(camera: _camera)),
+              Positioned.fill(child: WorldScene(camera: _camera)),
               for (var i = 0; i < kLocations.length; i++)
                 Positioned(
                   left: (i - _camera.position) * width,
