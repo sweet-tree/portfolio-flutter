@@ -57,10 +57,15 @@ const double kGlowKnee = 0;
 
 /// How far the light spills into the air around a word, as a fraction of the
 /// viewport's height. 0 turns the spill off entirely.
-const double kGlowBloom = 0.006;
+const double kGlowBloom = 0.0025;
 
 /// How much of the spill is kept.
-const double kGlowBloomStrength = 0.55;
+///
+/// Low. At full strength every letter carries a visible halo, which reads as
+/// the type being soft — and softness is the one thing this whole layer was
+/// built to avoid. The spill should be noticed only where the energy is
+/// strong, not as a permanent glow around the sentence.
+const double kGlowBloomStrength = 0.3;
 
 /// Resolution the COLOUR is computed at, as a fraction of a logical pixel.
 ///

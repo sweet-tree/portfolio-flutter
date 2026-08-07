@@ -11,6 +11,8 @@
 ///   · the typeface — this is still Flutter's fallback Roboto
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 import 'package:portfolio/src/chrome/nav.dart' show kNavHeight;
 import 'package:portfolio/src/design/layout.dart';
@@ -60,7 +62,26 @@ class _HeroPanelState extends State<HeroPanel> {
         builder: (context, constraints) => Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(location.role, style: AppType.label(context)),
+            // ⚠️ ONE LINE AT EVERY WIDTH. The role line is a keyword list, and
+            // a keyword list that wraps orphans its last item — "FLUTTER"
+            // alone on a second line on an iPhone SE, which reads as an
+            // accident. Shrinking it slightly is invisible; the orphan is not.
+            //
+            // scaleDown only ever reduces, so nothing changes on a frame where
+            // it already fits, and no breakpoint has to be guessed at.
+            SizedBox(
+              width: double.infinity,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  location.role,
+                  style: AppType.label(context),
+                  maxLines: 1,
+                  softWrap: false,
+                ),
+              ),
+            ),
             Expanded(
               child: Stack(
                 children: [
@@ -117,35 +138,25 @@ class _HeroPanelState extends State<HeroPanel> {
 /// reads as separate sentences stacked rather than as one statement.
 const double kLeading = 0.92;
 
-/// How much larger the biggest line may be set than the smallest.
+/// How far the width axis may be pushed to fit a line to the measure.
 ///
-/// ⚠️ THE SIZE RATIO HAS TO BE A DECISION. Setting every line to the measure
-/// means the size is decided by the character count — eighteen characters
-/// against thirty-two puts the first line at nearly 1.8x the second, which is
-/// not a ratio anyone would choose. Past this cap a line stops filling the
-/// measure and simply sets flush left with a ragged right, which is ordinary
-/// editorial setting; the alternative is a headline whose proportions are an
-/// accident of how the sentence happens to divide.
-const double kMaxLineRatio = 1.32;
-
-/// Optical tracking, as a fraction of the em, at the ends of the display range.
+/// ⚠️ FITTING IS DONE WITH WIDTH, NOT SIZE, and that is the whole change.
 ///
-/// ⚠️ TRACKING IS NOT ONE CONSTANT. Large type can carry more negative
-/// tracking than small type — the counters and sidebearings are relatively
-/// larger, so tightening reads as confidence rather than as collision. A flat
-/// -3.5% across a 2:1 size range was too tight at both ends: it collided the
-/// S and the y in "Systems" at the large end and closed up the small line at
-/// the other.
-// ⚠️ THESE ARE APPLIED ON TOP OF THE FONT'S OWN KERNING, not instead of it.
-// The typeface has already decided how close "Sy" should sit — the y's arm
-// tucks under the S — and letterSpacing then removes more space from that
-// pair uniformly. So tracking does not merely tighten the average; it eats the
-// adjustment the font had already made, and the tightest pairs collide first.
-// Roboto's default spacing is close to begin with and does not want much.
-const double kTrackTight = -0.014; // at kTrackLarge and above
-const double kTrackLoose = -0.006; // at kTrackSmall and below
-const double kTrackSmall = 40;
-const double kTrackLarge = 220;
+/// Setting each line to its own size is the pre-variable-font method: the size
+/// is then decided by the character count, so a line's proportions are an
+/// accident of how the sentence divides, and a ratio cap has to be invented to
+/// rescue it. With a width axis the size stays constant across the block and
+/// the LINES change shape instead — the longer one sets a little narrower, the
+/// shorter one a little wider, and both fill the column exactly. One size, one
+/// weight, one voice.
+///
+/// The range is deliberately narrow. Archivo goes to 62 and 125, and the file
+/// is trimmed to 75-112, but past roughly ten percent either way the
+/// letterforms stop reading as fitted and start reading as stretched. A line
+/// that needs more than this is a line that is broken in the wrong place, and
+/// the axis should not be used to rescue a bad break.
+const double kWidthMin = 88;
+const double kWidthMax = 110;
 
 /// The dominant mass: every line SET TO THE MEASURE.
 ///
@@ -181,50 +192,67 @@ class _Name extends StatelessWidget {
   /// The hero panel, which the mask measures the block's position against.
   final GlobalKey panel;
 
-  /// Optical tracking for a given size, on a curve rather than a constant.
+  /// One line's style at a given size and width-axis setting.
   ///
-  /// Large type carries more negative tracking than small type does — its
-  /// counters and sidebearings are relatively larger, so tightening reads as
-  /// confidence rather than as letters colliding.
-  double _tracking(double size) {
-    final t = ((size - kTrackSmall) / (kTrackLarge - kTrackSmall)).clamp(
-      0.0,
-      1.0,
-    );
-    return size * (kTrackLoose + (kTrackTight - kTrackLoose) * t);
-  }
-
-  /// [height] is left null while measuring — leading cannot be decided until
-  /// every line's size is known, because it belongs to the block.
-  TextStyle _sized(TextStyle base, double size, [double? height]) =>
-      base.copyWith(
+  /// ⚠️ NO letterSpacing ANYWHERE. Tracking is applied on top of the font's own
+  /// kerning, so it eats the adjustment the typeface already made for each
+  /// pair — the tightest pair goes first, which is exactly how "Sy" collided.
+  /// Archivo's spacing at this weight is display spacing already; fitting is
+  /// done with the width axis instead, which changes the letterforms rather
+  /// than the gaps between them.
+  TextStyle _line(
+    TextStyle base,
+    double size,
+    double width, [
+    double? height,
+  ]) => base.copyWith(
         fontSize: size,
-        letterSpacing: _tracking(size),
         height: height,
-        // Kerning asked for explicitly rather than assumed. It is the one
-        // thing standing between the S and the y, and a display setting is
-        // where its absence shows first.
-        fontFeatures: const [FontFeature.enable('kern')],
+        fontVariations: [
+          const FontVariation('wght', kDisplayWeight),
+          FontVariation('wdth', width),
+        ],
       );
 
-  /// How wide one line sets in [style], with no wrapping allowed.
-  double _widthOf(String text, TextStyle style) {
+  /// How wide one line sets, with no wrapping allowed.
+  ///
+  /// ⚠️ MEASURED THE WAY THE WIDGET WILL LAY IT OUT, not with a bare painter.
+  /// A `Text` applies the ambient textScaler and merges the DefaultTextStyle;
+  /// a painter given only the explicit style answers a slightly different
+  /// question. Since every line is fitted to within a hair of the measure,
+  /// "slightly different" is the difference between two lines and three: the
+  /// line overflows by a fraction of a pixel and Flutter wraps it.
+  double _widthOf(String text, TextStyle style, TextScaler scaler) {
     final painter = TextPainter(
       text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
+      textScaler: scaler,
     )..layout();
     final width = painter.width;
     painter.dispose();
     return width;
   }
 
-  /// The size at which [text] exactly fills [measure].
-  double _solve(String text, TextStyle base, double measure) {
-    var lo = 8.0;
-    var hi = 520.0;
-    for (var i = 0; i < 18; i++) {
+  /// The width-axis value at which [text] fills [measure] at [size].
+  ///
+  /// Searched rather than calculated: width does not scale linearly with the
+  /// axis — the designer drew intermediate masters, which is the entire point
+  /// of a variable font — so the only honest way to hit the measure is to ask
+  /// the font.
+  double _fitWidth(
+    String text,
+    TextStyle base,
+    double size,
+    double measure,
+    TextScaler scaler,
+  ) {
+    var lo = kWidthMin;
+    var hi = kWidthMax;
+    if (_widthOf(text, _line(base, size, hi), scaler) <= measure) return hi;
+    if (_widthOf(text, _line(base, size, lo), scaler) >= measure) return lo;
+    for (var i = 0; i < 12; i++) {
       final mid = (lo + hi) / 2;
-      if (_widthOf(text, _sized(base, mid)) <= measure) {
+      if (_widthOf(text, _line(base, size, mid), scaler) <= measure) {
         lo = mid;
       } else {
         hi = mid;
@@ -236,38 +264,57 @@ class _Name extends StatelessWidget {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      final base = AppType.display(context);
-      final measure = constraints.maxWidth;
+      // ⚠️ THE DEFAULT STYLE IS MERGED HERE, ONCE, and letterSpacing pinned to
+      // zero. A `Text` merges the ambient DefaultTextStyle into whatever it is
+      // given, so anything this style leaves unset arrives from the Material
+      // theme — including its tracking. Measuring without that merge answers a
+      // different question from the one the widget will ask.
+      final base = DefaultTextStyle.of(context).style
+          .merge(AppType.display(context))
+          .copyWith(letterSpacing: 0);
+      final scaler = MediaQuery.textScalerOf(context);
 
-      // Every line to the measure...
-      var sizes = [for (final line in lines) _solve(line, base, measure)];
+      // ⚠️ FIT TO SLIGHTLY LESS THAN THE MEASURE. Fitting exactly leaves zero
+      // margin, and a line that comes out a fraction of a pixel over does not
+      // sit a fraction over — it WRAPS, and the whole block gains a line. The
+      // hair given up here is invisible; the wrap is not.
+      final measure = constraints.maxWidth * 0.995;
 
-      // ...then the spread capped, so the proportions are chosen rather than
-      // inherited from how the sentence happens to divide. A line held back by
-      // the cap stops filling the measure and sets ragged right.
-      final smallest = sizes.reduce((a, b) => a < b ? a : b);
-      sizes = [
-        for (final size in sizes)
-          size > smallest * kMaxLineRatio ? smallest * kMaxLineRatio : size,
-      ];
+      // ONE SIZE for the whole statement, taken from the height it is allowed
+      // and the number of lines. Nothing about the copy decides it.
+      var size = constraints.maxHeight / (lines.length * kLeading);
 
-      // Leading is ONE distance for the block, taken from the largest line.
-      var largest = sizes.reduce((a, b) => a > b ? a : b);
-      var leading = largest * kLeading;
-
-      // The stack is exactly that distance per line, so fitting the box is a
-      // single scale of everything rather than a per-line adjustment.
-      final stack = leading * sizes.length;
-      if (stack > constraints.maxHeight && stack > 0) {
-        final shrink = constraints.maxHeight / stack;
-        sizes = [for (final size in sizes) size * shrink];
-        largest *= shrink;
-        leading *= shrink;
+      // Then reduced if any line cannot be squeezed into the measure even at
+      // the narrowest width the axis is allowed to go. Three passes: width is
+      // close enough to linear in size for the first correction to land, and
+      // the rest converge.
+      for (var pass = 0; pass < 3; pass++) {
+        var worst = 1.0;
+        for (final line in lines) {
+          final atNarrowest = _widthOf(
+            line,
+            _line(base, size, kWidthMin),
+            scaler,
+          );
+          if (atNarrowest > measure) {
+            worst = math.min(worst, measure / atNarrowest);
+          }
+        }
+        if (worst < 1) size *= worst;
       }
 
-      // Each line's multiplier is whatever makes ITS box that one distance,
-      // which is what keeps the baselines evenly spaced across sizes.
-      final heights = [for (final size in sizes) leading / size];
+      // Each line then fitted to the measure by WIDTH. A line that already
+      // fits at the widest setting simply sets there and falls short, which is
+      // an honest ragged right rather than a stretched letterform.
+      final widths = [
+        for (final line in lines)
+          _fitWidth(line, base, size, measure, scaler),
+      ];
+
+      // Leading is one distance for the block — and with a single size that is
+      // simply the size times the ratio, which is what having one size buys.
+      final leading = size * kLeading;
+      final height = leading / size;
 
       // One paragraph with a style per line — NOT a Column of Texts. The mask
       // has to be a single rasterisation of the whole statement, and separate
@@ -278,7 +325,12 @@ class _Name extends StatelessWidget {
           for (var i = 0; i < lines.length; i++)
             TextSpan(
               text: i == lines.length - 1 ? lines[i] : '${lines[i]}\n',
-              style: _sized(base, sizes[i], heights[i]).copyWith(color: colour),
+              style: _line(
+                base,
+                size,
+                widths[i],
+                height,
+              ).copyWith(color: colour),
             ),
         ],
       );
@@ -296,8 +348,12 @@ class _Name extends StatelessWidget {
           child: TypeMaskCapture(
             panel: panel,
             span: span(const Color(0xFFFFFFFF)),
-            signature: Object.hash(Object.hashAll(lines), Object.hashAll(sizes),
-                measure, align),
+            signature: Object.hash(
+              Object.hashAll(lines),
+              Object.hashAll(widths),
+              size,
+              measure,
+            ),
             maxWidth: measure,
             textAlign: align,
             // The text still lays the statement out and still carries it for a
@@ -367,34 +423,49 @@ class _BottomRail extends StatelessWidget {
   /// The name lives here, as metadata. It is the least useful fact on the page
   /// for someone deciding whether to call him, so it does not get to be the
   /// biggest thing on it.
+  ///
+  /// ⚠️ IT WRAPS RATHER THAN TRUNCATES on a narrow frame. Ellipsising it read
+  /// as "AVAILABLE…" on an iPhone SE, which is worse than useless: the one
+  /// word that got cut is the one that matters, and a truncated line looks
+  /// like a bug rather than a decision. A Wrap moves the whole phrase to its
+  /// own run instead, so the information survives at any width.
+  ///
   /// [tight] sizes the row to its content, which the desktop layout needs so
-  /// the Spacer after it can push the index right. On a phone it must be the
-  /// full width instead — otherwise the Flexible has no bound to ellipsis
-  /// against and the availability text runs off the edge.
-  Widget _status(BuildContext context, {bool tight = true}) => Row(
-    mainAxisSize: tight ? MainAxisSize.min : MainAxisSize.max,
-    children: [
-      Text(
-        'DMITRY SEVRYUKOV',
-        style: AppType.label(context).copyWith(color: Palette.ink),
-      ),
-      const SizedBox(width: Space.lg),
-      const _StatusDot(),
-      const SizedBox(width: Space.sm),
-      Flexible(
-        child: Text(
-          // Shortened rather than ellipsised on a phone. A truncated
-          // "AVAILABLE FOR REMOT…" looks broken; the short form is the same
-          // information and fits.
+  /// the Spacer after it can push the index right.
+  Widget _status(BuildContext context, {bool tight = true}) {
+    final name = Text(
+      'DMITRY SEVRYUKOV',
+      style: AppType.label(context).copyWith(color: Palette.ink),
+    );
+    final availability = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _StatusDot(),
+        const SizedBox(width: Space.sm),
+        Text(
+          // Shortened rather than ellipsised on a phone: the short form is the
+          // same information and fits.
           context.isCompact
               ? 'AVAILABLE · REMOTE'
               : 'AVAILABLE FOR REMOTE WORK',
           style: AppType.label(context),
-          overflow: TextOverflow.ellipsis,
         ),
-      ),
-    ],
-  );
+      ],
+    );
+
+    if (tight) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [name, const SizedBox(width: Space.lg), availability],
+      );
+    }
+    return Wrap(
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: Space.lg,
+      runSpacing: Space.xs,
+      children: [name, availability],
+    );
+  }
 
   List<Widget> _position(
     BuildContext context, {

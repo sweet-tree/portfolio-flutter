@@ -29,6 +29,28 @@ const String kTextFamily = 'Inter';
 /// Both a weight and the axis setting that actually applies it.
 List<FontVariation> _wght(double value) => [FontVariation('wght', value)];
 
+/// Weight, plus the optical size axis driven by the size actually being set.
+///
+/// ⚠️ THE POINT OF CHOOSING INTER. An optical-size axis is the typeface's own
+/// answer to what a hand-written tracking curve approximates badly: as the
+/// size grows it tightens the spacing and refines the detail, and as it
+/// shrinks it opens up and thickens. Leaving the axis parked at its default
+/// throws away the reason the face was picked. Clamped to the axis's range.
+List<FontVariation> _textAxes(double weight, double size) => [
+  FontVariation('wght', weight),
+  FontVariation('opsz', size.clamp(14.0, 32.0)),
+];
+
+/// Display weight, already compensated for the dark ground.
+///
+/// ⚠️ LIGHT TYPE ON A DARK GROUND READS HEAVIER than the same weight on white
+/// — irradiation: the bright areas bleed into the dark ones in the eye. Near
+/// white on near black at display size is the worst case for it, so the
+/// statement is set a little lighter than the number a light-background design
+/// would use, and lands at the same apparent weight. On a continuous axis this
+/// costs nothing; with static weights it would not be expressible at all.
+const double kDisplayWeight = 560;
+
 /// Text styles, resolved against the current viewport width.
 ///
 /// Read them off the context (`AppType.display(context)`) rather than storing
@@ -39,17 +61,19 @@ abstract final class AppType {
   /// The size contrast against [label] is deliberate and extreme — roughly
   /// 15:1 at desktop width. That gap is most of what makes a hero read as a
   /// composition rather than as a web page with a big title.
-  /// The tracking here is a placeholder: the hero solves its own, on a curve,
-  /// because a single em-relative constant cannot serve a 2:1 range of sizes.
+  /// ⚠️ NO letterSpacing. The hand-written tracking curve is gone: it was
+  /// applied ON TOP of the typeface's own kerning, eating the adjustment the
+  /// designer had already made for each pair — which is why the tightest pair
+  /// in the sentence collided first. Archivo's spacing at this weight is
+  /// already display spacing; the hero varies WIDTH to fit, not letter gaps.
   static TextStyle display(BuildContext context) {
     final size = fluid(context.vw, min: 52, max: 184);
     return TextStyle(
       fontFamily: kDisplayFamily,
       fontSize: size,
       height: 1.02,
-      letterSpacing: size * -0.014,
       fontWeight: FontWeight.w600,
-      fontVariations: _wght(600),
+      fontVariations: _wght(kDisplayWeight),
       color: Palette.ink,
     );
   }
@@ -75,8 +99,7 @@ abstract final class AppType {
       fontFamily: kTextFamily,
       fontSize: size,
       height: 1.5,
-      letterSpacing: size * -0.01,
-      fontVariations: _wght(400),
+      fontVariations: _textAxes(400, size),
       color: Palette.inkMuted,
     );
   }
@@ -88,7 +111,7 @@ abstract final class AppType {
       fontFamily: kTextFamily,
       fontSize: size,
       height: 1.6,
-      fontVariations: _wght(400),
+      fontVariations: _textAxes(400, size),
       color: Palette.inkMuted,
     );
   }
@@ -100,7 +123,7 @@ abstract final class AppType {
     height: 1.2,
     letterSpacing: 0,
     fontWeight: FontWeight.w500,
-    fontVariations: _wght(500),
+    fontVariations: _textAxes(500, 15),
     color: Palette.ink,
   );
 
@@ -112,9 +135,12 @@ abstract final class AppType {
     fontFamily: kTextFamily,
     fontSize: 12,
     height: 1.2,
+    // Positive tracking survives the move to an optical axis: opsz opens the
+    // face up for small sizes, but ALL-CAPS needs more than lowercase does,
+    // and no axis knows the text is set in capitals.
     letterSpacing: 1.4,
     fontWeight: FontWeight.w500,
-    fontVariations: _wght(500),
+    fontVariations: _textAxes(500, 12),
     color: Palette.inkMuted,
   );
 }
