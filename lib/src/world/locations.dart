@@ -67,7 +67,7 @@ const List<Location> kLocations = [
     // on a phone, where the same two long lines have to shrink to fit the
     // width. The statement wraps to whatever the frame is and is sized to
     // fill it — see _Name.
-    title: 'I ship production systems from raw data to the last pixel.',
+    title: 'Production systems from raw data to the last pixel.',
   ),
   Location(
     path: '/work',
