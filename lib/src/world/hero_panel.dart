@@ -125,57 +125,99 @@ class _HeroPanelState extends State<HeroPanel> {
   }
 }
 
-/// Baseline-to-baseline distance, as a fraction of the LARGEST line's size.
-///
-/// ⚠️ ONE VALUE FOR THE WHOLE BLOCK, not a multiple of each line's own size.
-/// Leading is a property of a paragraph, not of a line: setting it per line
-/// means the smaller line gets a proportionally smaller gap, so a stack of
-/// differently-sized lines ends up unevenly spaced. Each line's height
-/// multiplier is derived from this and its own size, which is what keeps the
-/// baselines evenly spaced whatever the sizes turn out to be.
+/// Leading, as a fraction of the size of the line it belongs to.
 ///
 /// Below 1 because display type set flush wants to sit close, or the block
 /// reads as separate sentences stacked rather than as one statement.
+///
+/// ⚠️ IT IS PER LINE, AND THAT IS ONLY RIGHT BECAUSE EVERY LINE FILLS THE
+/// MEASURE. In ordinary setting leading belongs to the paragraph — one
+/// baseline-to-baseline distance for the block — because lines of running text
+/// are the same size and a varying gap would read as broken rhythm. Here each
+/// line is scaled until it spans the column, so the block is a stack of masses
+/// of differing scale, and the gap has to scale with them: a fixed gap taken
+/// from the largest line leaves the smaller one floating away from the mass it
+/// belongs to. Scaling the gap keeps the density even, which is what the eye
+/// reads as one block.
 const double kLeading = 0.92;
 
-/// How far the width axis may be pushed to fit a line to the measure.
+/// How far the width axis may be pushed when setting the block.
 ///
-/// ⚠️ FITTING IS DONE WITH WIDTH, NOT SIZE, and that is the whole change.
+/// ⚠️ ONE WIDTH FOR THE WHOLE BLOCK — the axis is NOT a justification engine.
 ///
-/// Setting each line to its own size is the pre-variable-font method: the size
-/// is then decided by the character count, so a line's proportions are an
-/// accident of how the sentence divides, and a ratio cap has to be invented to
-/// rescue it. With a width axis the size stays constant across the block and
-/// the LINES change shape instead — the longer one sets a little narrower, the
-/// shorter one a little wider, and both fill the column exactly. One size, one
-/// weight, one voice.
+/// It used to fit every line to the measure separately, which flushed both
+/// edges and was wrong. At one size, an 18-character line and a 13-character
+/// one need proportions 25% apart to fill the same column, so "Production
+/// Systems" set at the narrow end while "from raw data" set at the wide end.
+/// Same face, same size, same weight — and the block read as two typefaces,
+/// the condensed line looking smaller and lighter than the extended ones. That
+/// is the digital version of horizontally scaling type to fit; a real axis
+/// keeps the strokes from breaking, but the proportions still change and the
+/// eye still catches it.
+///
+/// Optical consistency inside one statement is not negotiable, so the axis
+/// picks ONE proportion for the setting: the value at which the LONGEST line
+/// fills the measure. Every other line falls where the copy puts it. The rag
+/// that leaves is honest, and a rag reads as a decision where a stretched
+/// letterform reads as a mistake.
 ///
 /// The range is deliberately narrow. Archivo goes to 62 and 125, and the file
 /// is trimmed to 75-112, but past roughly ten percent either way the
-/// letterforms stop reading as fitted and start reading as stretched. A line
-/// that needs more than this is a line that is broken in the wrong place, and
-/// the axis should not be used to rescue a bad break.
+/// letterforms stop reading as set and start reading as stretched.
 const double kWidthMin = 88;
 const double kWidthMax = 110;
 
-/// The dominant mass: every line SET TO THE MEASURE.
+/// Archivo's drawn proportion — the width the designer actually drew.
 ///
-/// ⚠️ THE BREAKS ARE AUTHORED AND EACH LINE IS SIZED SEPARATELY, which is not
-/// how this started and is the only version that survives a phone.
+/// Used whenever the block does not need the axis to fit anything, which is
+/// the flush setting below: there the SIZE does the fitting, so the axis has no
+/// job and the only honest thing for it to do is nothing.
+const double kWidthNormal = 100;
+
+/// A size to measure at. Nothing is set at it; width is linear in size for a
+/// fixed axis value, so one measurement at any size gives every other by ratio.
+const double kProbeSize = 100;
+
+/// The dominant mass. ONE WIDTH ALWAYS; the size either fits or does not.
 ///
-/// It used to pick one size for the whole statement and let the text wrap
-/// wherever the width ran out. Two things were wrong with that. On a narrow
-/// frame the wrap chose five lines of small type; and the fit test only asked
-/// whether the BLOCK fitted, never whether a WORD did — so at some sizes
-/// "Production" was wider than the column and Flutter broke it down the
-/// middle. A size that splits a word must be unreachable, not unlikely.
+/// ⚠️ THE ONE RULE UNDERNEATH ALL OF THIS: SIZE MAY VARY BETWEEN LINES, WIDTH
+/// MAY NOT.
 ///
-/// So the copy carries its own breaks (one set per frame shape) and each line
-/// is solved independently for the size that makes it exactly fill the column.
-/// A line with more characters comes out smaller, the block is flush on both
-/// edges without any justification trickery, and no wrap decision is left to
-/// chance — which also means no word can ever be broken, because no line is
-/// ever asked to wrap at all.
+/// Both are ways to make a line span the column, and they are not equivalent.
+/// Changing a line's SIZE keeps the letterforms the designer drew and reads as
+/// deliberate hierarchy — it is how display type has been set since metal.
+/// Changing a line's WIDTH changes the proportions of the letters themselves,
+/// and the eye reads two proportions in one sentence as two typefaces; that is
+/// the fault that made "Production Systems" look small next to "from raw data"
+/// on a phone. See [kWidthMin].
+///
+/// So the width is chosen once for the block and every line is set with it. The
+/// size is then allowed to vary — but only where varying it says something true
+/// about the sentence, which is what the two settings below decide between.
+///
+/// ⚠️ WHICH SETTING IS USED IS DECIDED BY THE COPY, NOT BY THE VIEWPORT.
+///
+///   FLUSH — every line scaled until it fills the column, so the block is
+///   square on both edges. Only used when the lines get LONGER as you read
+///   down, because then the sizes come out getting smaller as you read down,
+///   and that agrees with the sentence: the subject dominates and the span
+///   qualifies it. Wide frames get this, since "Production Systems" (18
+///   characters) sits above "from raw data to the last pixel." (32).
+///
+///   RAGGED — one size for every line, the width taken from the longest, and
+///   the short lines simply end early. Used whenever scaling to the measure
+///   would NOT agree with the sentence. A phone gets this: its middle line
+///   "from raw data" is the shortest of the three, so filling the column would
+///   make it the largest thing in the statement and the loudest phrase would be
+///   the least important one.
+///
+/// Deriving it from the copy rather than from a breakpoint means a change to
+/// the sentence cannot silently produce a setting that emphasises the wrong
+/// words — the block re-decides.
+///
+/// The copy carries authored breaks (one set per frame shape), so no wrap
+/// decision is ever left to chance, which is also what makes it impossible for
+/// a word to be broken: no line is ever asked to wrap at all.
 class _Name extends StatelessWidget {
   const _Name({
     required this.lines,
@@ -262,8 +304,23 @@ class _Name extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    // ⚠️ THE FIT HAS TO BE RE-SOLVED WHEN THE FACE ARRIVES.
+    //
+    // The size and the width are MEASURED, and the bundled faces load
+    // asynchronously. Win the race and the block is solved against Archivo;
+    // lose it and it is solved against the fallback, whose glyphs are a
+    // different width — so a different size and a different width-axis value
+    // get baked in and then never revisited. Flutter re-lays the text out when
+    // a font lands, which is why nothing looks broken, but it does not re-run
+    // this search, so the setting quietly differed from one refresh to the
+    // next depending on whether the font beat the first layout.
+    //
+    // systemFonts fires on exactly that event. Rebuilding re-measures against
+    // the real face, and the setting is the same every time.
+    animation: PaintingBinding.instance.systemFonts,
+    builder: (context, _) => LayoutBuilder(
+      builder: (context, constraints) {
       // ⚠️ THE DEFAULT STYLE IS MERGED HERE, ONCE, and letterSpacing pinned to
       // zero. A `Text` merges the ambient DefaultTextStyle into whatever it is
       // given, so anything this style leaves unset arrives from the Material
@@ -280,41 +337,103 @@ class _Name extends StatelessWidget {
       // hair given up here is invisible; the wrap is not.
       final measure = constraints.maxWidth * 0.995;
 
-      // ONE SIZE for the whole statement, taken from the height it is allowed
-      // and the number of lines. Nothing about the copy decides it.
-      var size = constraints.maxHeight / (lines.length * kLeading);
+      // ⚠️ THE BLOCK IS SET AS IF IT HAD ONE MORE LINE, and that phantom line
+      // is left empty beneath it.
+      //
+      // Bottom-anchored, the statement came to rest directly on the rail and
+      // read as having fallen there rather than having been placed. The air it
+      // needs underneath is a LINE, not a number picked by eye: reserving a
+      // slot here and holding it open below means the gap is exactly one
+      // leading, at every size the fit arrives at and on every frame shape.
+      final slots = lines.length + 1;
+      final allowance = constraints.maxHeight;
 
-      // Then reduced if any line cannot be squeezed into the measure even at
-      // the narrowest width the axis is allowed to go. Three passes: width is
-      // close enough to linear in size for the first correction to land, and
-      // the rest converge.
-      for (var pass = 0; pass < 3; pass++) {
-        var worst = 1.0;
-        for (final line in lines) {
-          final atNarrowest = _widthOf(
-            line,
-            _line(base, size, kWidthMin),
-            scaler,
-          );
-          if (atNarrowest > measure) {
-            worst = math.min(worst, measure / atNarrowest);
-          }
-        }
-        if (worst < 1) size *= worst;
-      }
-
-      // Each line then fitted to the measure by WIDTH. A line that already
-      // fits at the widest setting simply sets there and falls short, which is
-      // an honest ragged right rather than a stretched letterform.
-      final widths = [
-        for (final line in lines)
-          _fitWidth(line, base, size, measure, scaler),
+      // ── What every line measures, at one reference setting ─────────────────
+      //
+      // Width is linear in size for a fixed axis value, so these ratios are all
+      // the fitting below needs; nothing has to be re-measured per candidate.
+      final probe = _line(base, kProbeSize, kWidthNormal);
+      final natural = [
+        for (final line in lines) math.max(_widthOf(line, probe, scaler), 1),
       ];
 
-      // Leading is one distance for the block — and with a single size that is
-      // simply the size times the ratio, which is what having one size buys.
-      final leading = size * kLeading;
-      final height = leading / size;
+      // ⚠️ THE COPY DECIDES THE SETTING. Scaling each line to the column is
+      // only honest when it makes the sizes DESCEND as you read — see the class
+      // comment. That is true exactly when the lines get longer as you read, so
+      // the copy is asked rather than the viewport.
+      var flush = true;
+      for (var i = 1; i < natural.length; i++) {
+        if (natural[i] < natural[i - 1]) flush = false;
+      }
+
+      final List<double> sizes;
+      final double width;
+
+      if (flush) {
+        // ── FLUSH: the SIZE fits, so the axis does nothing ──────────────────
+        //
+        // Each line is scaled until it spans the column exactly. The width sits
+        // at the proportion the typeface was drawn at, because there is nothing
+        // left for it to fit and any other value would be distortion for its
+        // own sake.
+        width = kWidthNormal;
+        final wanted = [
+          for (final w in natural) kProbeSize * measure / w,
+        ];
+
+        // ⚠️ THEN CHECKED BY MEASUREMENT, because the arithmetic above assumes
+        // width is exactly linear in size and it is not quite — rounding in
+        // the shaper puts a line a fraction of a pixel either side. A fraction
+        // over does not overhang the column by a fraction: it WRAPS, and the
+        // block silently gains a line. Cheap to just ask.
+        for (var i = 0; i < wanted.length; i++) {
+          for (var pass = 0; pass < 2; pass++) {
+            final actual = _widthOf(
+              lines[i],
+              _line(base, wanted[i], kWidthNormal),
+              scaler,
+            );
+            if (actual > measure) wanted[i] *= measure / actual;
+          }
+        }
+        // Then the whole block scaled down together if it is taller than the
+        // space it is allowed. Together, so the relationship between the lines
+        // — which is the composition — survives the constraint.
+        final tall = wanted.fold<double>(0, (sum, s) => sum + s * kLeading);
+        final room = allowance * (lines.length / slots);
+        final fit = tall > room ? room / tall : 1.0;
+        sizes = [for (final s in wanted) s * fit];
+      } else {
+        // ── RAGGED: ONE size, and the axis fits the longest line ────────────
+        //
+        // The longest line is the only one that can collide with the column, so
+        // it sets both. The others are set with the same two values and end
+        // where the copy ends them.
+        var one = allowance / (slots * kLeading);
+        final longest = lines[
+          natural.indexOf(natural.reduce(math.max))
+        ];
+
+        // Reduced if that line cannot be squeezed into the column even at the
+        // narrowest the axis is allowed to go. Three passes: width is close
+        // enough to linear in size for the first correction to land, and the
+        // rest converge.
+        for (var pass = 0; pass < 3; pass++) {
+          final atNarrowest = _widthOf(
+            longest,
+            _line(base, one, kWidthMin),
+            scaler,
+          );
+          if (atNarrowest > measure) one *= math.min(1, measure / atNarrowest);
+        }
+        width = _fitWidth(longest, base, one, measure, scaler);
+        sizes = [for (var i = 0; i < lines.length; i++) one];
+      }
+
+      // The gap held open beneath the block: one leading of the line that ends
+      // it, so the statement clears the rail by the same distance it uses
+      // between its own lines.
+      final float = sizes.last * kLeading;
 
       // One paragraph with a style per line — NOT a Column of Texts. The mask
       // has to be a single rasterisation of the whole statement, and separate
@@ -327,9 +446,9 @@ class _Name extends StatelessWidget {
               text: i == lines.length - 1 ? lines[i] : '${lines[i]}\n',
               style: _line(
                 base,
-                size,
-                widths[i],
-                height,
+                sizes[i],
+                width,
+                kLeading,
               ).copyWith(color: colour),
             ),
         ],
@@ -341,35 +460,43 @@ class _Name extends StatelessWidget {
         // where the field lives. Centring it leaves a dead band underneath.
         child: Align(
           alignment: Alignment.bottomLeft,
-          // The mask is built from EXACTLY what the visible text is built
-          // from — the same span, the same measure, the same alignment.
-          // Anything derived or approximate here is what puts the light out of
-          // register with the letters.
-          child: TypeMaskCapture(
-            panel: panel,
-            span: span(const Color(0xFFFFFFFF)),
-            signature: Object.hash(
-              Object.hashAll(lines),
-              Object.hashAll(widths),
-              size,
-              measure,
-            ),
-            maxWidth: measure,
-            textAlign: align,
-            // The text still lays the statement out and still carries it for a
-            // screen reader — but once the glow is drawing the letters it
-            // paints transparent, so they are never rasterised twice. Until
-            // then it paints normally, so the sentence is never missing: not
-            // while the shader loads, not if it fails to load at all.
-            builder: (context, {required visible}) => Text.rich(
-              span(visible ? Palette.ink : const Color(0x00000000)),
-              key: Key('title-$path'),
+          // The phantom line, held open. The statement now floats one leading
+          // clear of the rail instead of sitting on it — and because the slot
+          // was reserved before the size was chosen, this takes nothing away
+          // from the type.
+          child: Padding(
+            padding: EdgeInsets.only(bottom: float),
+            // The mask is built from EXACTLY what the visible text is built
+            // from — the same span, the same measure, the same alignment.
+            // Anything derived or approximate here is what puts the light out
+            // of register with the letters.
+            child: TypeMaskCapture(
+              panel: panel,
+              span: span(const Color(0xFFFFFFFF)),
+              signature: Object.hash(
+                Object.hashAll(lines),
+                Object.hashAll(sizes),
+                width,
+                measure,
+              ),
+              maxWidth: measure,
               textAlign: align,
+              // The text still lays the statement out and still carries it for
+              // a screen reader — but once the glow is drawing the letters it
+              // paints transparent, so they are never rasterised twice. Until
+              // then it paints normally, so the sentence is never missing: not
+              // while the shader loads, not if it fails to load at all.
+              builder: (context, {required visible}) => Text.rich(
+                span(visible ? Palette.ink : const Color(0x00000000)),
+                key: Key('title-$path'),
+                textAlign: align,
+              ),
             ),
           ),
         ),
       );
-    },
+      },
+    ),
   );
 }
 

@@ -12,6 +12,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:portfolio/src/design/tokens.dart';
+import 'package:portfolio/src/world/shaders.dart';
 import 'package:portfolio/src/world/world_camera.dart';
 
 /// Where the cube sits inside its own location, as a fraction of the viewport.
@@ -50,6 +51,10 @@ class _WorldSceneState extends State<WorldScene>
   @override
   void initState() {
     super.initState();
+    // ⚠️ SYNCHRONOUS. The program was loaded before the first frame — see
+    // [Shaders] — so the scene is drawn properly from the very first frame
+    // instead of showing flat background until an await completed.
+    _shader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -57,13 +62,6 @@ class _WorldSceneState extends State<WorldScene>
       setState(() => _time = elapsed.inMicroseconds / 1e6);
     });
     unawaited(_ticker.start());
-    unawaited(_load());
-  }
-
-  Future<void> _load() async {
-    final program = await ui.FragmentProgram.fromAsset('shaders/scene.frag');
-    if (!mounted) return;
-    setState(() => _shader = program.fragmentShader());
   }
 
   @override

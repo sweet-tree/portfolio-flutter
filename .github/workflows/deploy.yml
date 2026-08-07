@@ -47,7 +47,22 @@ jobs:
         # Flutter also emits the JavaScript build alongside as an automatic
         # fallback for browsers without WasmGC — notably every browser on iOS,
         # since they are all WebKit underneath.
-        run: flutter build web --wasm --release
+        #
+        # ⚠️ --no-web-resources-cdn IS LOAD-BEARING, and it was missing here
+        # while the Makefile, web/_headers and these comments all claimed the
+        # renderer was self-hosted. It was not: the live build was pulling
+        # CanvasKit from gstatic.com. That survived only because gstatic happens
+        # to send a permissive CORP header — COEP (see web/_headers) would
+        # otherwise block it and the app would never start. It also put ~1.5MB
+        # of third-party download back on first paint, on a host we do not
+        # control.
+        run: flutter build web --wasm --release --no-web-resources-cdn
+
+      - name: Confirm the renderer is self-hosted
+        # The flag above fails SILENTLY if it is ever dropped — the site keeps
+        # working, it just quietly depends on someone else's CDN again. This is
+        # what makes that loud.
+        run: grep -q '"useLocalCanvasKit":true' build/web/flutter_bootstrap.js
 
       - name: Confirm _headers survived the build
         # The cache rules live in that file. If it is ever missing, deploys go

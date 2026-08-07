@@ -36,6 +36,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
+import 'package:portfolio/src/world/shaders.dart';
 
 // ── The dials ───────────────────────────────────────────────────────────────
 
@@ -163,6 +164,31 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
   Offset? _lastOrigin;
   Object? _lastSignature;
   double? _lastRatio;
+
+  @override
+  void initState() {
+    super.initState();
+    // ⚠️ THE RASTERISATION IS OF WHATEVER FACE WAS LOADED AT THE TIME.
+    //
+    // The bundled faces arrive asynchronously, so a capture taken before
+    // Archivo lands is a picture of the fallback — right size, wrong glyphs —
+    // and the caller's signature need not change when the real face arrives,
+    // so nothing would ever ask for a new one. This forces it.
+    PaintingBinding.instance.systemFonts.addListener(_onFontsChanged);
+  }
+
+  @override
+  void dispose() {
+    PaintingBinding.instance.systemFonts.removeListener(_onFontsChanged);
+    super.dispose();
+  }
+
+  void _onFontsChanged() {
+    _lastSignature = null;
+    // After the frame that re-lays the text out with the new face, not this
+    // one — the render object is still carrying the old layout right now.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _rebuild());
+  }
 
   void _rebuild() {
     if (!mounted) return;
@@ -301,20 +327,19 @@ class _TypeGlowState extends State<TypeGlow>
   @override
   void initState() {
     super.initState();
+    // ⚠️ SYNCHRONOUS, and that is what stops the statement being drawn twice.
+    //
+    // Loading the program here would mean the first frames had no glow, so
+    // Flutter drew the letters as plain ink and the glow replaced them a
+    // moment later — one visible change per page load. The program is resolved
+    // before the first frame now (see [Shaders]), so the statement's first
+    // appearance is already its final one.
+    _shader = Shaders.typeGlow?.fragmentShader();
+    typeGlowReady.value = _shader != null;
     _ticker = createTicker((elapsed) {
       setState(() => _time = elapsed.inMicroseconds / 1e6);
     });
     unawaited(_ticker.start());
-    unawaited(_load());
-  }
-
-  Future<void> _load() async {
-    final program = await ui.FragmentProgram.fromAsset(
-      'shaders/type_glow.frag',
-    );
-    if (!mounted) return;
-    setState(() => _shader = program.fragmentShader());
-    typeGlowReady.value = true;
   }
 
   @override
