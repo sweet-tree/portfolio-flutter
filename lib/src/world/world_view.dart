@@ -19,6 +19,7 @@ import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
 import 'package:portfolio/src/world/hero_panel.dart';
 import 'package:portfolio/src/world/locations.dart';
+import 'package:portfolio/src/world/type_glow.dart';
 import 'package:portfolio/src/world/world_camera.dart';
 import 'package:portfolio/src/world/world_scene.dart';
 
@@ -137,6 +138,13 @@ class _WorldViewState extends State<WorldView>
                       ? HeroPanel(location: kLocations[i], camera: _camera)
                       : _LocationPanel(location: kLocations[i]),
                 ),
+              // The light the statement throws off when the energy reaches it.
+              //
+              // ABOVE the panels, so it adds to the letters rather than being
+              // hidden behind them, and below the nav, which is chrome and
+              // should not glow. It only ever adds light — the type underneath
+              // is untouched and stays crisp.
+              TypeGlow(camera: _camera.position),
               WorldNav(camera: _camera),
             ],
           ),

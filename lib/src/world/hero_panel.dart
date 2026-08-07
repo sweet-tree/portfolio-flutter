@@ -17,16 +17,33 @@ import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
 import 'package:portfolio/src/world/locations.dart';
+import 'package:portfolio/src/world/type_glow.dart';
 import 'package:portfolio/src/world/world_camera.dart';
 
-class HeroPanel extends StatelessWidget {
+class HeroPanel extends StatefulWidget {
   const HeroPanel({required this.location, required this.camera, super.key});
 
   final Location location;
   final WorldCamera camera;
 
   @override
+  State<HeroPanel> createState() => _HeroPanelState();
+}
+
+class _HeroPanelState extends State<HeroPanel> {
+  /// The statement's position is measured against this rather than against the
+  /// screen, so that travelling does not change it — the camera offset is
+  /// applied in the shader, where it is one addition.
+  ///
+  /// ⚠️ IT HAS TO LIVE IN STATE. As a field on a StatelessWidget it would be a
+  /// new key on every rebuild, and this panel rebuilds every frame the camera
+  /// moves; a changed GlobalKey tears the subtree down and builds it again.
+  final GlobalKey _panel = GlobalKey();
+
+  @override
   Widget build(BuildContext context) {
+    final location = widget.location;
+    final camera = widget.camera;
     // The same margin the nav uses. Read from one place so the wordmark, the
     // role line, the name and the bottom rail all sit on a single vertical.
     final gutter = ContentColumn.gutterOf(context);
@@ -37,6 +54,7 @@ class HeroPanel extends StatelessWidget {
     // the statement needs the width.
     final statementShare = context.isCompact ? 0.74 : 0.54;
     return Padding(
+      key: _panel,
       padding: EdgeInsets.fromLTRB(gutter, kNavHeight, gutter, gutter),
       child: LayoutBuilder(
         builder: (context, constraints) => Column(
@@ -57,9 +75,15 @@ class HeroPanel extends StatelessWidget {
                       constraints: BoxConstraints(
                         maxHeight: constraints.maxHeight * statementShare,
                       ),
-                      child: _Name(
-                        title: location.title,
-                        path: location.path,
+                      // Recorded as a mask so the glow layer above the world
+                      // knows where the letters are. The text itself is
+                      // untouched — same widget, same colour, still crisp.
+                      child: TypeMaskCapture(
+                        panel: _panel,
+                        child: _Name(
+                          title: location.title,
+                          path: location.path,
+                        ),
                       ),
                     ),
                   ),

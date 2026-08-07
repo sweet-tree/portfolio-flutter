@@ -34,3 +34,6 @@ flutter:
   # compiled program itself.
   shaders:
     - shaders/scene.frag
+    # The light the statement throws off. Runs on a layer above the text and
+    # only ever adds — the type is drawn by Flutter, untouched.
+    - shaders/type_glow.frag
