@@ -37,30 +37,40 @@ const double kCubeSize = 0.26;
 /// because its GPU is simply far weaker. So the scale is chosen at runtime.
 /// The quality ladder, best first: (resolution scale, volumetric quality).
 ///
-/// RESOLUTION IS GIVEN UP LAST. Low resolution ruins the cube's edges, which
-/// are the most carefully made thing in the scene; the volumetric is soft by
-/// nature and loses very little from a coarser march. So each rung trades the
-/// cloud's step count first and only drops pixels when that is exhausted.
+/// TWO RULES, both from measurement rather than taste.
+///
+/// 1. THE CUBE MUST STAY FLAWLESS. Its edges are the most carefully made thing
+///    in the scene and low resolution is what ruins them, so the scale never
+///    falls below 0.72 — no rung exists beneath that. The volumetric is soft
+///    by nature and loses very little from a coarser march, so it is spent
+///    first and spent hard: every resolution is exhausted for quality before
+///    a single pixel is given up.
+///
+/// 2. SIXTY WAS NEVER THE TARGET. An iPhone 11 is the floor of the audience —
+///    anyone on less is not hiring — and 35-40 there is fine. Chasing 60 on it
+///    only bought softness nobody asked for.
 const List<({double scale, double quality})> kQualityLadder = [
   (scale: 1.00, quality: 1.00),
-  (scale: 0.85, quality: 1.00),
-  (scale: 0.85, quality: 0.65),
-  (scale: 0.70, quality: 0.65),
-  (scale: 0.70, quality: 0.35),
-  (scale: 0.58, quality: 0.35),
-  (scale: 0.58, quality: 0.00),
-  (scale: 0.45, quality: 0.00),
+  (scale: 1.00, quality: 0.60),
+  (scale: 1.00, quality: 0.20),
+  (scale: 0.85, quality: 0.60),
+  (scale: 0.85, quality: 0.20),
+  (scale: 0.72, quality: 0.35),
+  (scale: 0.72, quality: 0.00),
 ];
 
-/// Where a new session starts — middle of the ladder, so a weak device steps
-/// down a few rungs rather than a dozen.
-const int kInitialScaleStep = 3;
+/// Where a new session starts — a rung a good desktop clears easily and a
+/// weak phone only has to step down a little from.
+const int kInitialScaleStep = 2;
 
-/// Step down below this, up above the other. The gap between them is the
-/// hysteresis that stops it oscillating: dropping the resolution raises the
-/// frame rate, which would otherwise immediately raise the resolution again.
-const double kScaleDownBelowFps = 50;
-const double kScaleUpAboveFps = 58;
+/// Step down below this, up above the other. The gap is the hysteresis that
+/// stops it oscillating: dropping quality is what RAISED the frame rate, so a
+/// symmetric rule would climb straight back to a rung it knows is too dear.
+///
+/// Deliberately low. The scene is a backdrop behind readable text, not a game,
+/// and an iPhone 11 holding 35-40 is a success.
+const double kScaleDownBelowFps = 34;
+const double kScaleUpAboveFps = 44;
 
 class WorldScene extends StatefulWidget {
   const WorldScene({required this.camera, super.key});
