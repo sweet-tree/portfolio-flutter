@@ -70,11 +70,19 @@ const float kCubeX = 0.5;
 const float kCubeY = 0.34;
 const float kCubeSize = 0.26;
 
-// The statement's ink, and what the energy turns it into.
-// ⚠️ kInkColour MUST MATCH Palette.ink, or the letters change colour the
-// moment this shader takes over drawing them.
+// The statement's ink.
+// ⚠️ MUST MATCH Palette.ink, or the letters change colour the moment this
+// shader takes over drawing them.
 const vec3 kInkColour = vec3(0.929, 0.929, 0.941);
-const vec3 kHitColour = vec3(1.0, 0.13, 0.10);
+
+// How much white is kept in a fully-lit letter.
+//
+// ZERO: the letters take the fog's colour as it is. The control stays because
+// the energy's neat hue is a deep cool blue and this is the one sentence on
+// the page that has to be readable — if a fully-saturated letter turns out to
+// be too dark to read, this is the dial that buys legibility back without
+// inventing a colour.
+const float kKeepWhite = 0.0;
 
 // ── The energy. DUPLICATED FROM scene.frag — keep identical ─────────────────
 
@@ -164,27 +172,37 @@ void main() {
   vec3 rd = normalize(fwd * kFocal + right * uv.x + up * uv.y);
 
   // The panel's front face — the glass the statement stands against.
-  float landed = 0.0;
+  vec3 energy = vec3(0.0);
   if (rd.z > 1e-5) {
     float t = (kEdgeZ - kSlab - kEye.z) / rd.z;
     if (t > 0.0) {
-      vec3 energy = surfaceEnergy(kEye + rd * t, vec3(0.0, 0.0, -1.0));
-      landed = dot(energy, vec3(0.2126, 0.7152, 0.0722));
+      energy = surfaceEnergy(kEye + rd * t, vec3(0.0, 0.0, -1.0));
     }
   }
+  float landed = dot(energy, vec3(0.2126, 0.7152, 0.0722));
 
   // How far the energy has driven this part of the letter. Straight and
   // linear — no amplification curve.
   float a = clamp((landed - uKnee) * uGain, 0.0, 1.0);
 
+  // ⚠️ THE COLOUR IS THE ENERGY'S OWN, TAKEN AT RUNTIME — not a constant
+  // chosen to look like it. Dividing out the brightness leaves the hue, so
+  // whatever the energy on the glass is doing, the letters are doing the same
+  // thing. Retint the fog and the type follows without touching this file,
+  // which is the whole reason the effect reads as one substance rather than as
+  // two things that happen to match.
+  float peak = max(energy.r, max(energy.g, energy.b));
+  vec3 hue = peak > 1e-4 ? energy / peak : vec3(1.0);
+
   if (uMode < 0.5) {
     // THE LETTER'S COLOUR. Opaque: the glyph coverage is applied afterwards by
     // compositing against the rasterised type, which is the only edge in the
     // whole effect.
-    fragColor = vec4(mix(kInkColour, kHitColour, a), 1.0);
+    vec3 lit = mix(hue, vec3(1.0), kKeepWhite);
+    fragColor = vec4(mix(kInkColour, lit, a), 1.0);
   } else {
     // THE BLOOM SOURCE. Only the driven parts spill light, so a word at rest
     // throws nothing into the air. Premultiplied.
-    fragColor = vec4(kHitColour * a, a);
+    fragColor = vec4(hue * a, a);
   }
 }

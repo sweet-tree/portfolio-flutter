@@ -40,11 +40,20 @@ import 'package:flutter/widgets.dart';
 // ── The dials ───────────────────────────────────────────────────────────────
 
 /// How quickly a letter turns as energy lands on it.
-const double kGlowGain = 6;
+///
+/// NEUTRAL. At 1 the letters show the fog at exactly the strength it has on
+/// the glass — no amplification, nothing added. The machinery is still here
+/// and still wired up, because turning a letter into an amplifier is a real
+/// thing to want; it is just not what is wanted now.
+const double kGlowGain = 1;
 
-/// How much energy has to land before a letter reacts at all. Below this a
-/// word is plain white type.
-const double kGlowKnee = 0.03;
+/// How much energy has to land before a letter reacts at all.
+///
+/// NEUTRAL, for the same reason. At 0 the faintest fog already tints the type,
+/// which is what "the same fog, on the letters" means. Raise it and the type
+/// ignores everything below the threshold, which is what turns a wash into a
+/// flare.
+const double kGlowKnee = 0;
 
 /// How far the light spills into the air around a word, as a fraction of the
 /// viewport's height. 0 turns the spill off entirely.
