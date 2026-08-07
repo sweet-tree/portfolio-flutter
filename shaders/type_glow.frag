@@ -41,7 +41,12 @@ precision highp float;
 uniform vec2 uSize;        // this pass's buffer, in device pixels
 uniform vec2 uOrigin;      // the buffer's top-left, in the panel's coordinates
 uniform vec2 uViewport;    // the whole viewport, which the camera ray needs
-uniform float uPixelRatio; // device pixels per logical pixel
+// Buffer pixels per LOGICAL pixel — deliberately not the device pixel ratio.
+// This pass computes a smooth gradient with no detail in it, so it runs on a
+// buffer far smaller than the block; every edge in the result comes from the
+// glyph rasterisation, which is at full device resolution. Rendering this at
+// the device ratio instead cost an iPhone 11 everything it had.
+uniform float uPixelRatio;
 
 uniform float uTime;
 uniform float uCamera;  // position in locations; 1.0 == one section

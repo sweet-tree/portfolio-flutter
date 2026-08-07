@@ -62,6 +62,24 @@ const double kGlowBloom = 0.006;
 /// How much of the spill is kept.
 const double kGlowBloomStrength = 0.55;
 
+/// Resolution the COLOUR is computed at, as a fraction of a logical pixel.
+///
+/// ⚠️ THIS WAS THE DEVICE PIXEL RATIO AND IT COST THE PHONES EVERYTHING.
+/// Rendering the colour at 2x on an iPhone 11 and 3x on a 13 Pro means four
+/// and nine times the pixels of the layout — twice per frame, since the bloom
+/// source is its own pass — plus a blur over an area that size. It was more
+/// fill rate than the entire scene shader, and it took the 11 to 17 FPS.
+///
+/// Only the MASK needs resolution. The colour is a smooth energy gradient with
+/// no detail in it whatsoever, and every edge in the result comes from the
+/// glyph image, which is still rasterised at full device resolution. So this
+/// is a fraction of a LOGICAL pixel and the letters stay exactly as sharp.
+const double kColourScale = 0.4;
+
+/// The bloom source is blurred immediately afterwards, so it can be coarser
+/// still. Resolution spent here is thrown away by the blur by definition.
+const double kBloomScale = 0.22;
+
 /// The statement, rasterised once. Alpha is the glyph coverage — the real one,
 /// the only one — and there is no second rasterisation anywhere.
 @immutable
@@ -340,7 +358,7 @@ class _GlowPainter extends CustomPainter {
   /// render target — inside a layer it would be relative to that layer, which
   /// is not something to guess at. Here the buffer's size and origin are both
   /// known and passed in.
-  ui.Image _render(Size buffer, Rect area, double mode) {
+  ui.Image _render(Size buffer, Rect area, double scale, double mode) {
     shader
       ..setFloat(0, buffer.width)
       ..setFloat(1, buffer.height)
@@ -348,7 +366,10 @@ class _GlowPainter extends CustomPainter {
       ..setFloat(3, area.top)
       ..setFloat(4, glyphs.viewport.width)
       ..setFloat(5, glyphs.viewport.height)
-      ..setFloat(6, glyphs.pixelRatio)
+      // Buffer pixels per logical pixel — NOT the device ratio. The shader
+      // works in the layout's coordinates and divides this out; what it must
+      // be told is how this particular buffer relates to them.
+      ..setFloat(6, scale)
       ..setFloat(7, time)
       ..setFloat(8, camera)
       ..setFloat(9, kGlowGain)
@@ -371,13 +392,17 @@ class _GlowPainter extends CustomPainter {
     final area = glyphs.block;
     if (area.isEmpty) return;
 
-    final buffer = Size(
-      (area.width * glyphs.pixelRatio).roundToDouble(),
-      (area.height * glyphs.pixelRatio).roundToDouble(),
+    // ⚠️ SIZED IN LOGICAL PIXELS, NOT DEVICE PIXELS. See kColourScale — this
+    // buffer holds a smooth gradient, and the sharpness of the result comes
+    // entirely from the glyph image below, which IS at device resolution.
+    Size bufferFor(double scale) => Size(
+      (area.width * scale).roundToDouble().clamp(1, double.infinity),
+      (area.height * scale).roundToDouble().clamp(1, double.infinity),
     );
-    if (buffer.isEmpty) return;
 
-    final src = Offset.zero & buffer;
+    final colourBuffer = bufferFor(kColourScale);
+    final bloomBuffer = bufferFor(kBloomScale);
+
     final glyphSrc = Offset.zero &
         Size(glyphs.image.width.toDouble(), glyphs.image.height.toDouble());
     // Panel coordinates back to screen: the panel travels one viewport width
@@ -391,7 +416,7 @@ class _GlowPainter extends CustomPainter {
     // rest throws nothing.
     final sigma = size.height * kGlowBloom;
     if (sigma > 0.01) {
-      final bloom = _render(buffer, area, 1);
+      final bloom = _render(bloomBuffer, area, kBloomScale, 1);
       canvas
         ..saveLayer(
           dst.inflate(sigma * 4),
@@ -409,7 +434,16 @@ class _GlowPainter extends CustomPainter {
               tileMode: TileMode.decal,
             ),
         )
-        ..drawImageRect(bloom, src, dst, Paint()..isAntiAlias = false)
+        ..drawImageRect(
+          bloom,
+          Offset.zero & bloomBuffer,
+          dst,
+          // Bilinear on the way up: this is a coarse buffer being enlarged,
+          // and it is about to be blurred anyway.
+          Paint()
+            ..filterQuality = FilterQuality.low
+            ..isAntiAlias = false,
+        )
         // Kept only where the glyphs are — the same single rasterisation.
         ..drawImageRect(
           glyphs.image,
@@ -439,15 +473,19 @@ class _GlowPainter extends CustomPainter {
     //
     // Both rectangles are already snapped to whole pixels, so there is nothing
     // for antialiasing to do here except cause exactly this.
-    final colour = _render(buffer, area, 0);
+    final colour = _render(colourBuffer, area, kColourScale, 0);
     canvas
       ..saveLayer(dst, Paint())
       ..drawImageRect(
         colour,
-        src,
+        Offset.zero & colourBuffer,
         dst,
+        // Bilinear, because this buffer is smaller than the block and is being
+        // enlarged. Safe: it holds a smooth gradient with no edges in it, and
+        // the frame this used to cause came from the RECTANGLE's antialiasing,
+        // which is off, not from the image filtering.
         Paint()
-          ..filterQuality = FilterQuality.none
+          ..filterQuality = FilterQuality.low
           ..isAntiAlias = false,
       )
       ..drawImageRect(
