@@ -75,15 +75,10 @@ class _HeroPanelState extends State<HeroPanel> {
                       constraints: BoxConstraints(
                         maxHeight: constraints.maxHeight * statementShare,
                       ),
-                      // Recorded as a mask so the glow layer above the world
-                      // knows where the letters are. The text itself is
-                      // untouched — same widget, same colour, still crisp.
-                      child: TypeMaskCapture(
+                      child: _Name(
+                        title: location.title,
+                        path: location.path,
                         panel: _panel,
-                        child: _Name(
-                          title: location.title,
-                          path: location.path,
-                        ),
                       ),
                     ),
                   ),
@@ -111,10 +106,17 @@ class _HeroPanelState extends State<HeroPanel> {
 /// Wide frames get two lines, tall narrow frames get four or five, and both
 /// fill their space.
 class _Name extends StatelessWidget {
-  const _Name({required this.title, required this.path});
+  const _Name({
+    required this.title,
+    required this.path,
+    required this.panel,
+  });
 
   final String title;
   final String path;
+
+  /// The hero panel, which the mask measures the block's position against.
+  final GlobalKey panel;
 
   /// Tracking scales with size, so it has to be recomputed per candidate.
   TextStyle _sized(TextStyle base, double size) =>
@@ -192,10 +194,27 @@ class _Name extends StatelessWidget {
         // where the field lives. Centring it leaves a dead band underneath.
         child: Align(
           alignment: Alignment.bottomLeft,
-          child: Text(
-            title,
-            key: Key('title-$path'),
+          // The mask is built from EXACTLY these three values — the same
+          // string, the same solved style, the same wrap width the visible
+          // text is laid out with. Passing anything derived or approximate
+          // here is what puts the light out of register with the letters.
+          child: TypeMaskCapture(
+            panel: panel,
+            text: title,
             style: _sized(base, lo),
+            maxWidth: constraints.maxWidth,
+            // The Text still lays the statement out and still carries it for a
+            // screen reader — but once the glow is drawing the letters it
+            // paints transparent, so they are never rasterised twice. Until
+            // then it paints normally, so the sentence is never missing: not
+            // while the shader loads, not if it fails to load at all.
+            builder: (context, {required visible}) => Text(
+              title,
+              key: Key('title-$path'),
+              style: visible
+                  ? _sized(base, lo)
+                  : _sized(base, lo).copyWith(color: const Color(0x00000000)),
+            ),
           ),
         ),
       );

@@ -1,37 +1,45 @@
-/// The statement's letters as amplifiers of the energy that reaches them.
+/// The statement, drawn ONCE and coloured by the energy that reaches it.
 ///
-/// Two halves. [TypeMaskCapture] wraps the statement and records WHERE the
-/// glyphs are; [TypeGlow] sits above the whole world and adds light wherever a
-/// glyph and the energy field coincide.
+/// ⚠️ THE WHOLE DESIGN IS "ONE RASTERISATION", and everything else follows.
 ///
-/// ⚠️ THE TEXT ITSELF IS NEVER TOUCHED. It stays the plain `Text` widget it has
-/// always been — same style, same colour, rasterised from the glyph atlas at
-/// full resolution — and the glow is a separate layer above it composited with
-/// `BlendMode.plus`, which can only add. The crisp glyphs underneath still
-/// define every edge, so nothing here can soften the one thing on the page a
-/// visitor has to read.
+/// The obvious build — leave Flutter drawing white text and lay a coloured
+/// layer over it — cannot be made exact, and no amount of pixel alignment
+/// helps. It rasterises the letters twice: once by the engine onto the screen,
+/// once by us into a mask. Two rasterisations of the same layout share glyph
+/// POSITIONS but need not share antialiasing COVERAGE, and reconciling them
+/// afterwards only trades artefacts. Cover slightly less than the text and the
+/// outermost pixel of every letter never gets coloured — a white rim. Cover
+/// slightly more and the colour lands on the panel, which is not black but
+/// dark BLUE, so it strips the blue and leaves a dark rim instead.
 ///
-/// ⚠️ AND NOT A SHADER ON THE TEXT'S OWN PAINT, which is the obvious approach
-/// and is a trap. The two web renderers disagree: skwasm (the `--wasm` build,
-/// desktop) passes the whole Paint through so a shader fill works, while
-/// CanvasKit — the JavaScript fallback, which is what every browser on iOS
-/// gets — keeps only `foreground.color` and silently drops the shader. A Paint
-/// carrying only a shader defaults to opaque black, so the statement would
-/// render black-on-black on an iPhone and perfectly on a Mac. Samplers and
-/// blend modes, used here instead, are implemented on both renderers, and the
-/// site already proves both on real hardware.
+/// So the type is rasterised exactly once, into an image whose alpha IS the
+/// glyph coverage. A shader supplies what colour that coverage should be
+/// filled with, and the two are composited a single time. There is no second
+/// edge to disagree with the first, so it is exact by construction rather than
+/// by tuning.
+///
+/// The `Text` widget stays in the tree — it still does the layout and it still
+/// carries the sentence for a screen reader — but it paints transparent once
+/// this is ready, so nothing is drawn twice.
+///
+/// ⚠️ AND NOT A SHADER ON THE TEXT'S OWN PAINT, which is the other obvious
+/// build and is a trap. skwasm (the `--wasm` desktop build) passes the whole
+/// Paint through so a shader fill works, while CanvasKit — the JavaScript
+/// fallback every browser on iOS uses — keeps only `foreground.color` and
+/// silently drops the shader (canvaskit/text.dart:563). A Paint carrying only
+/// a shader defaults to opaque black, so the statement would have rendered
+/// black on a dark panel on the phone and perfectly on a Mac.
 library;
 
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 // ── The dials ───────────────────────────────────────────────────────────────
 
-/// How quickly a letter turns red as energy lands on it. Straight and linear.
+/// How quickly a letter turns as energy lands on it.
 const double kGlowGain = 6;
 
 /// How much energy has to land before a letter reacts at all. Below this a
@@ -40,135 +48,207 @@ const double kGlowKnee = 0.03;
 
 /// How far the light spills into the air around a word, as a fraction of the
 /// viewport's height. 0 turns the spill off entirely.
-///
-/// Very slight: enough that a red word sits in a faint wash rather than being
-/// cut out of the panel with scissors, not enough to read as a glow effect.
 const double kGlowBloom = 0.006;
 
 /// How much of the spill is kept.
-///
-/// ⚠️ THE BLOOM IS ADDITIVE EVEN THOUGH THE COLOUR IS NOT, and that is the
-/// right way round. Inside a letter the red must REPLACE the white, so that
-/// pass is source-over. Outside it there is only dark panel, and light in the
-/// air is light — it adds. Painting the spill source-over would lay flat red
-/// haze over the glass instead of lighting it.
 const double kGlowBloomStrength = 0.55;
 
-/// Resolution the glow is rendered at, and the resolution the glyph mask is
-/// baked at, both as a fraction of the viewport.
-///
-/// ⚠️ BOTH AT FULL, and that is not caution. When the layer merely ADDED light
-/// the letterform's edges came from the crisp text underneath, so a coarse
-/// mask cost nothing. Now that it REPLACES the colour, the mask's edge IS the
-/// red's edge — anything less than full resolution and the red spills a pixel
-/// or two outside the white glyph, which on a dark panel reads as a fringe.
-const double kGlowScale = 1;
-const double kMaskScale = 1;
+/// The statement, rasterised once. Alpha is the glyph coverage — the real one,
+/// the only one — and there is no second rasterisation anywhere.
+@immutable
+class TypeGlyphs {
+  const TypeGlyphs({
+    required this.image,
+    required this.block,
+    required this.viewport,
+    required this.pixelRatio,
+  });
 
-/// Where the glyphs are, in the hero panel's own coordinates. Null until the
-/// first layout has been measured.
-///
-/// ⚠️ OPAQUE, WITH THE COVERAGE IN RED, NOT IN ALPHA. Flutter images are
-/// premultiplied: a pixel holding colour beside a partial alpha is not a valid
-/// premultiplied colour and what a backend does with it is undefined. Data goes
-/// in a colour channel; alpha stays 1.
-final ValueNotifier<ui.Image?> typeMask = ValueNotifier<ui.Image?>(null);
+  /// White glyphs on transparent, at [pixelRatio] device pixels per logical
+  /// pixel, covering exactly [block].
+  final ui.Image image;
 
-/// Wraps the statement and keeps [typeMask] in step with it.
+  /// Where those glyphs sit in the hero panel's coordinates. Measured against
+  /// the panel rather than the screen so that travelling does not change it —
+  /// the camera offset is applied in the shader, where it is one subtraction.
+  final Rect block;
+  final Size viewport;
+  final double pixelRatio;
+}
+
+/// The current rasterisation, or null before the first layout.
+final ValueNotifier<TypeGlyphs?> typeGlyphs = ValueNotifier<TypeGlyphs?>(null);
+
+/// True once the glow can draw the statement itself.
 ///
-/// Measured from the real render object rather than by re-deriving the layout.
-/// The statement's position falls out of a font-size search, a bottom
-/// alignment and three levels of padding; a second copy of that arithmetic
-/// would have to be kept in step forever, whereas asking the render object
-/// cannot drift because it IS the layout.
+/// Until then the `Text` widget paints normally, so the sentence is never
+/// invisible — not while the shader loads, not if it fails to load at all.
+final ValueNotifier<bool> typeGlowReady = ValueNotifier<bool>(false);
+
+/// Wraps the statement: lays out the mask exactly as the text is laid out, and
+/// hides the text once the glow is drawing it.
 class TypeMaskCapture extends StatefulWidget {
   const TypeMaskCapture({
     required this.panel,
-    required this.child,
+    required this.text,
+    required this.style,
+    required this.maxWidth,
+    required this.builder,
     super.key,
   });
 
-  /// The hero panel, which the block is measured against — so that travelling
-  /// does not change the mask. The camera offset is applied in the shader
-  /// instead, where it is a single addition.
+  /// The hero panel, which the block's position is measured against.
   final GlobalKey panel;
-  final Widget child;
+
+  /// Exactly what the visible text is given. Any divergence here is a
+  /// divergence between the colour and the letters.
+  final String text;
+  final TextStyle style;
+  final double maxWidth;
+
+  /// Builds the text. `visible` is false once the glow has taken over drawing
+  /// it, at which point the widget should paint nothing while still laying out
+  /// and still carrying its semantics.
+  final Widget Function(BuildContext context, {required bool visible}) builder;
 
   @override
   State<TypeMaskCapture> createState() => _TypeMaskCaptureState();
 }
 
 class _TypeMaskCaptureState extends State<TypeMaskCapture> {
-  final GlobalKey _boundary = GlobalKey();
+  final GlobalKey _block = GlobalKey();
   Size? _lastViewport;
-  Rect? _lastRect;
+  Offset? _lastOrigin;
+  TextStyle? _lastStyle;
+  double? _lastRatio;
 
-  void _capture() {
+  void _rebuild() {
     if (!mounted) return;
-    final block = _boundary.currentContext?.findRenderObject();
+    final block = _block.currentContext?.findRenderObject();
     final panel = widget.panel.currentContext?.findRenderObject();
-    if (block is! RenderRepaintBoundary || panel is! RenderBox) return;
+    if (block is! RenderBox || panel is! RenderBox) return;
     if (!block.hasSize || !panel.hasSize) return;
 
     final viewport = MediaQuery.sizeOf(context);
+    final ratio = MediaQuery.devicePixelRatioOf(context);
     final origin = panel.globalToLocal(block.localToGlobal(Offset.zero));
-    final rect = origin & block.size;
-    if (viewport == _lastViewport && rect == _lastRect) return;
+    if (viewport == _lastViewport &&
+        origin == _lastOrigin &&
+        widget.style == _lastStyle &&
+        ratio == _lastRatio) {
+      return;
+    }
     if (viewport.isEmpty || block.size.isEmpty) return;
     _lastViewport = viewport;
-    _lastRect = rect;
+    _lastOrigin = origin;
+    _lastStyle = widget.style;
+    _lastRatio = ratio;
 
-    final width = (viewport.width * kMaskScale).round();
-    final height = (viewport.height * kMaskScale).round();
-    if (width <= 0 || height <= 0) return;
+    // ⚠️ THE STYLE PASSED IN IS NOT THE STYLE THE TEXT IS DRAWN WITH.
+    //
+    // A `Text` widget merges the ambient DefaultTextStyle into whatever style
+    // it is given, then hands the result to a TextPainter along with the
+    // textScaler, directionality, width basis and height behaviour it reads
+    // from context. Feed a TextPainter only the explicit style and it lays the
+    // same string out with slightly different metrics — close enough to look
+    // right, wrong by pixels, which is exactly what this cannot afford. So the
+    // same inputs are reconstructed here. Anything `Text` starts reading from
+    // context in future has to be added to this list.
+    final defaults = DefaultTextStyle.of(context);
+    var effective = widget.style;
+    if (effective.inherit) effective = defaults.style.merge(effective);
 
-    // kMaskScale is 1, which is also toImageSync's default — passing it
-    // explicitly trips avoid_redundant_argument_values, so the coupling is
-    // asserted instead of written. If the mask ever goes below full
-    // resolution again, this is the line that has to change with it.
-    assert(kMaskScale == 1, 'pass pixelRatio: kMaskScale below');
-    final glyphs = block.toImageSync();
+    final painter = TextPainter(
+      text: TextSpan(
+        // White: the rasterisation is a SHAPE. What colour the statement ends
+        // up is decided per pixel by the shader.
+        text: widget.text,
+        style: effective.copyWith(color: const Color(0xFFFFFFFF)),
+      ),
+      textAlign: defaults.textAlign ?? TextAlign.start,
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: defaults.maxLines,
+      textWidthBasis: defaults.textWidthBasis,
+      textHeightBehavior:
+          defaults.textHeightBehavior ??
+          DefaultTextHeightBehavior.maybeOf(context),
+    )..layout(maxWidth: widget.maxWidth);
+
+    // The painter's own height, not the render object's. The letterforms hang
+    // BELOW their line box — the display style sets a line height of 1.02
+    // while Roboto's ink is about 1.17 em tall — so every descender lives
+    // outside the widget's box. Sizing to the box is what cut the bottom off
+    // every p and y in a dead straight line.
+    final block2 = Rect.fromLTWH(
+      origin.dx,
+      origin.dy,
+      block.size.width,
+      painter.height,
+    );
+
+    // Snapped to the pixel grid so one image pixel is one screen pixel: the
+    // block's origin is fractional, falling out of a font-size search and a
+    // bottom alignment, and drawing an integer-sized image into a fractional
+    // rectangle resamples the whole thing by a fraction of a pixel.
+    final area = Rect.fromLTRB(
+      block2.left.floorToDouble(),
+      block2.top.floorToDouble(),
+      block2.right.ceilToDouble(),
+      block2.bottom.ceilToDouble(),
+    );
+
+    final width = (area.width * ratio).round();
+    final height = (area.height * ratio).round();
+    if (width <= 0 || height <= 0) {
+      painter.dispose();
+      return;
+    }
 
     final recorder = ui.PictureRecorder();
-    Canvas(recorder)
-      ..drawRect(
-        Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
-        Paint()..color = const Color(0xFF000000),
-      )
-      // srcIn against white keeps the glyph COVERAGE and discards the colour
-      // the type happens to be drawn in — the mask is a shape, not a picture.
-      ..drawImage(
-        glyphs,
-        Offset(origin.dx * kMaskScale, origin.dy * kMaskScale),
-        Paint()
-          ..colorFilter = const ColorFilter.mode(
-            Color(0xFFFFFFFF),
-            BlendMode.srcIn,
-          ),
-      );
+    final canvas = Canvas(recorder)..scale(ratio);
+    painter
+      ..paint(canvas, origin - area.topLeft)
+      ..dispose();
 
     final picture = recorder.endRecording();
-    final mask = picture.toImageSync(width, height);
+    final image = picture.toImageSync(width, height);
     picture.dispose();
-    glyphs.dispose();
 
-    typeMask.value?.dispose();
-    typeMask.value = mask;
+    typeGlyphs.value?.image.dispose();
+    typeGlyphs.value = TypeGlyphs(
+      image: image,
+      block: area,
+      viewport: viewport,
+      pixelRatio: ratio,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     // After layout — the render object has no size or position until then.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _capture());
-    return RepaintBoundary(key: _boundary, child: widget.child);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _rebuild());
+    return ValueListenableBuilder<bool>(
+      valueListenable: typeGlowReady,
+      builder: (context, ready, _) => ValueListenableBuilder<TypeGlyphs?>(
+        valueListenable: typeGlyphs,
+        builder: (context, glyphs, _) => KeyedSubtree(
+          key: _block,
+          child: widget.builder(
+            context,
+            visible: !(ready && glyphs != null),
+          ),
+        ),
+      ),
+    );
   }
 }
 
-/// The light the letters throw off. Sits above the whole world.
+/// Draws the statement, coloured by the energy that reaches it.
 class TypeGlow extends StatefulWidget {
   const TypeGlow({required this.camera, super.key});
 
-  /// The camera's position in locations, so the glow travels with the panel.
+  /// The camera's position in locations, so the colour travels with the panel.
   final double camera;
 
   @override
@@ -192,15 +272,19 @@ class _TypeGlowState extends State<TypeGlow>
   }
 
   Future<void> _load() async {
-    final program = await ui.FragmentProgram.fromAsset('shaders/type_glow.frag');
+    final program = await ui.FragmentProgram.fromAsset(
+      'shaders/type_glow.frag',
+    );
     if (!mounted) return;
     setState(() => _shader = program.fragmentShader());
+    typeGlowReady.value = true;
   }
 
   @override
   void dispose() {
     _ticker.dispose();
     _shader?.dispose();
+    typeGlowReady.value = false;
     super.dispose();
   }
 
@@ -208,15 +292,15 @@ class _TypeGlowState extends State<TypeGlow>
   Widget build(BuildContext context) {
     final shader = _shader;
     if (shader == null) return const SizedBox.shrink();
-    return ValueListenableBuilder<ui.Image?>(
-      valueListenable: typeMask,
-      builder: (context, mask, _) => mask == null
+    return ValueListenableBuilder<TypeGlyphs?>(
+      valueListenable: typeGlyphs,
+      builder: (context, glyphs, _) => glyphs == null
           ? const SizedBox.shrink()
           : IgnorePointer(
               child: CustomPaint(
                 painter: _GlowPainter(
                   shader: shader,
-                  mask: mask,
+                  glyphs: glyphs,
                   time: _time,
                   camera: widget.camera,
                 ),
@@ -230,90 +314,147 @@ class _TypeGlowState extends State<TypeGlow>
 class _GlowPainter extends CustomPainter {
   const _GlowPainter({
     required this.shader,
-    required this.mask,
+    required this.glyphs,
     required this.time,
     required this.camera,
   });
 
   final ui.FragmentShader shader;
-  final ui.Image mask;
+  final TypeGlyphs glyphs;
   final double time;
   final double camera;
 
+  /// Renders the shader into its own buffer.
+  ///
+  /// Through an offscreen picture rather than straight onto the canvas inside
+  /// a saveLayer, because FlutterFragCoord is the position in the CURRENT
+  /// render target — inside a layer it would be relative to that layer, which
+  /// is not something to guess at. Here the buffer's size and origin are both
+  /// known and passed in.
+  ui.Image _render(Size buffer, Rect area, double mode) {
+    shader
+      ..setFloat(0, buffer.width)
+      ..setFloat(1, buffer.height)
+      ..setFloat(2, area.left)
+      ..setFloat(3, area.top)
+      ..setFloat(4, glyphs.viewport.width)
+      ..setFloat(5, glyphs.viewport.height)
+      ..setFloat(6, glyphs.pixelRatio)
+      ..setFloat(7, time)
+      ..setFloat(8, camera)
+      ..setFloat(9, kGlowGain)
+      ..setFloat(10, kGlowKnee)
+      ..setFloat(11, mode);
+
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder).drawRect(Offset.zero & buffer, Paint()..shader = shader);
+    final picture = recorder.endRecording();
+    final image = picture.toImageSync(
+      buffer.width.toInt(),
+      buffer.height.toInt(),
+    );
+    picture.dispose();
+    return image;
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
-    final low = Size(
-      (size.width * kGlowScale).roundToDouble(),
-      (size.height * kGlowScale).roundToDouble(),
+    final area = glyphs.block;
+    if (area.isEmpty) return;
+
+    final buffer = Size(
+      (area.width * glyphs.pixelRatio).roundToDouble(),
+      (area.height * glyphs.pixelRatio).roundToDouble(),
     );
-    if (low.isEmpty) return;
+    if (buffer.isEmpty) return;
 
-    shader
-      ..setFloat(0, low.width)
-      ..setFloat(1, low.height)
-      ..setFloat(2, time)
-      ..setFloat(3, camera)
-      ..setFloat(4, kGlowGain)
-      ..setFloat(5, kGlowKnee)
-      // Bilinear, not the FilterQuality.none default — nearest would turn the
-      // mask into visible steps along every letter's edge.
-      ..setImageSampler(0, mask, filterQuality: FilterQuality.low);
+    final src = Offset.zero & buffer;
+    final glyphSrc = Offset.zero &
+        Size(glyphs.image.width.toDouble(), glyphs.image.height.toDouble());
+    // Panel coordinates back to screen: the panel travels one viewport width
+    // per location.
+    final dst = area.translate(-camera * glyphs.viewport.width, 0);
 
-    // Rendered once into its own buffer, then composited twice: sharp for the
-    // flare inside the letters, blurred for the light spilling around them.
-    // Rendering it twice would double the shader's cost for no gain.
-    final recorder = ui.PictureRecorder();
-    Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
-    final picture = recorder.endRecording();
-    final image = picture.toImageSync(low.width.toInt(), low.height.toInt());
-
-    final src = Offset.zero & low;
-    final dst = Offset.zero & size;
-
-    // THE BLOOM, under the flare — light in the air around the word. Skipped
-    // entirely at zero rather than blurred by nothing: a full-screen blur is
-    // the most expensive thing in this painter.
+    // ── The spill, first and underneath ─────────────────────────────────────
+    //
+    // Additive, because outside a letter there is only dark panel and light in
+    // the air adds. Only the driven parts of a word contribute, so a word at
+    // rest throws nothing.
     final sigma = size.height * kGlowBloom;
     if (sigma > 0.01) {
-      canvas.drawImageRect(
-        image,
+      final bloom = _render(buffer, area, 1);
+      canvas
+        ..saveLayer(
+          dst.inflate(sigma * 4),
+          Paint()
+            ..blendMode = BlendMode.plus
+            ..color = Color.fromRGBO(
+              255,
+              255,
+              255,
+              kGlowBloomStrength.clamp(0.0, 1.0),
+            )
+            ..imageFilter = ui.ImageFilter.blur(
+              sigmaX: sigma,
+              sigmaY: sigma,
+              tileMode: TileMode.decal,
+            ),
+        )
+        ..drawImageRect(bloom, src, dst, Paint()..isAntiAlias = false)
+        // Kept only where the glyphs are — the same single rasterisation.
+        ..drawImageRect(
+          glyphs.image,
+          glyphSrc,
+          dst,
+          Paint()
+            ..blendMode = BlendMode.dstIn
+            ..isAntiAlias = false,
+        )
+        ..restore();
+      bloom.dispose();
+    }
+
+    // ── The statement itself ────────────────────────────────────────────────
+    //
+    // Colour everywhere, then cut to the glyph coverage, then composited once.
+    // The letters' edges are the rasterisation's own edges because there is
+    // only one rasterisation — nothing here can disagree with anything.
+    // ⚠️ ANTIALIASING OFF ON BOTH DRAWS, and it is not an optimisation.
+    //
+    // drawImageRect antialiases the RECTANGLE's own boundary. The first draw
+    // fills the block with opaque colour; the second cuts it down to the glyph
+    // coverage with dstIn — but on the outermost row of pixels that cut is
+    // only partially applied, because the cutting rectangle's edge is itself
+    // antialiased. What survives is a one-pixel ring of uncut colour: a frame
+    // drawn neatly around the statement.
+    //
+    // Both rectangles are already snapped to whole pixels, so there is nothing
+    // for antialiasing to do here except cause exactly this.
+    final colour = _render(buffer, area, 0);
+    canvas
+      ..saveLayer(dst, Paint())
+      ..drawImageRect(
+        colour,
         src,
         dst,
         Paint()
-          ..blendMode = BlendMode.plus
-          ..filterQuality = FilterQuality.high
-          ..color = Color.fromRGBO(
-            255,
-            255,
-            255,
-            kGlowBloomStrength.clamp(0.0, 1.0),
-          )
-          ..imageFilter = ui.ImageFilter.blur(
-            sigmaX: sigma,
-            sigmaY: sigma,
-            tileMode: TileMode.decal,
-          ),
-      );
-    }
-
-    // THE COLOUR ITSELF, over the letterforms.
-    //
-    // ⚠️ SOURCE-OVER, NOT PLUS. The statement is white, and adding to white
-    // does nothing — every channel is already at the top. A white letter can
-    // only turn red if something is painted OVER it. The shader confines this
-    // to the glyph coverage, so nothing outside a letter is touched.
-    canvas.drawImageRect(
-      image,
-      src,
-      dst,
-      Paint()..filterQuality = FilterQuality.high,
-    );
-
-    image.dispose();
-    picture.dispose();
+          ..filterQuality = FilterQuality.none
+          ..isAntiAlias = false,
+      )
+      ..drawImageRect(
+        glyphs.image,
+        glyphSrc,
+        dst,
+        Paint()
+          ..blendMode = BlendMode.dstIn
+          ..filterQuality = FilterQuality.none
+          ..isAntiAlias = false,
+      )
+      ..restore();
+    colour.dispose();
   }
 
   @override
   bool shouldRepaint(_GlowPainter old) =>
-      old.time != time || old.camera != camera || old.mask != mask;
+      old.time != time || old.camera != camera || old.glyphs != glyphs;
 }

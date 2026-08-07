@@ -1,58 +1,58 @@
-// THE LETTERS AS AMPLIFIERS.
+// THE STATEMENT'S COLOUR, as a function of the energy that reaches it.
 //
-// Energy arrives at a word faint, having travelled from the cube, across the
-// ledge and down the panel. The letterform does not merely show it — it
-// concentrates it. A weak wash landing on a word flares into bright, coloured
-// light and spills into the air around it, then dies back as the flow moves on.
+// This program produces COLOUR ONLY. It knows nothing about where the letters
+// are — it fills its whole rectangle — and the glyph shape is applied
+// afterwards by compositing the result against a single rasterisation of the
+// type. That division is the point, and it is what finally made the edges
+// exact.
 //
-// WHAT THIS PROGRAM IS AND IS NOT
+// ⚠️ WHY NOT SAMPLE A GLYPH MASK IN HERE, which is what this used to do.
 //
-// It does not draw the type. Flutter draws the statement exactly as it always
-// has — same widget, same colour, crisp, from the glyph atlas — and this runs
-// on a layer ABOVE it that can only ADD light. That matters for two reasons:
-// the crisp glyphs underneath still define every edge, and it avoids the one
-// Flutter API that would have broken the site on a phone.
+// The statement was being rasterised TWICE: once by the engine as white text
+// on screen, and once by us into a mask. Two rasterisations of the same layout
+// have the same glyph positions but need not have identical antialiasing
+// coverage, and every attempt to reconcile them after the fact traded one
+// artefact for another. Under-cover and the outermost pixel of each letter
+// never gets coloured, leaving a white rim. Over-cover and the colour lands on
+// the panel outside the letter — which is not black but dark BLUE, so
+// multiplying it by red strips the blue and leaves a dark rim instead.
 //
-// ⚠️ WHY NOT A SHADER ON THE TEXT'S OWN PAINT, which is the obvious approach:
-// the two web renderers disagree. skwasm (the --wasm build, desktop) passes
-// the whole Paint through, so a shader fill works. CanvasKit (the JavaScript
-// fallback, which is what EVERY browser on iOS gets) keeps only the paint's
-// COLOUR and silently drops the shader — canvaskit/text.dart:563. A Paint
-// carrying only a shader has a default colour of opaque black, so the
-// statement would have rendered black-on-black on an iPhone while looking
-// perfect on a Mac. Samplers and blend modes, which this uses instead, are
-// implemented on both.
+// There is no setting between those. The fix is not a better mask, it is one
+// rasterisation: the type is rasterised once, its alpha IS the glyph coverage,
+// and this shader supplies what colour that coverage should be filled with.
+// No second edge exists to disagree with the first.
 //
-// ⚠️ COORDINATES ARE DEVICE PIXELS. On the web FlutterFragCoord() is
-// gl_FragCoord.xy — the pixel position in the current render target, not
-// widget-local and not logical pixels. Everything here is therefore derived
-// from the buffer's own size, exactly as the scene shader does, so the ray
-// this builds is the same ray the scene builds for the same point.
+// ⚠️ COORDINATES. FlutterFragCoord() is gl_FragCoord.xy on the web — device
+// pixels of the current render target — so the buffer's own pixel ratio has to
+// be divided out to get back to the layout's coordinates. Everything else here
+// is in the panel's logical pixels, which is what the scene's camera maths
+// expects.
 //
 // ⚠️ THE ENERGY BELOW IS DUPLICATED FROM scene.frag AND MUST STAY IDENTICAL.
-// Flutter compiles one file per program with no way to share source. If one
-// copy is edited the other has to be edited with it, or the light on a letter
-// will drift out of step with the light on the glass behind it — which is the
-// one seam this effect cannot survive.
+// Flutter compiles one file per program with no way to share source. Edit one
+// copy and the other has to be edited with it, or the light on a letter drifts
+// out of step with the light on the glass behind it.
 
 #version 460 core
 #include <flutter/runtime_effect.glsl>
 
 precision highp float;
 
-uniform vec2 uSize;     // this pass's buffer, in pixels
+uniform vec2 uSize;        // this pass's buffer, in device pixels
+uniform vec2 uOrigin;      // the buffer's top-left, in the panel's coordinates
+uniform vec2 uViewport;    // the whole viewport, which the camera ray needs
+uniform float uPixelRatio; // device pixels per logical pixel
+
 uniform float uTime;
 uniform float uCamera;  // position in locations; 1.0 == one section
 
-// How hard a letter amplifies what lands on it, and how sharply. The exponent
-// is what makes it a FLARE rather than a fade: below the knee almost nothing
-// happens, above it the letter takes off.
-uniform float uGain;
-uniform float uKnee;
+uniform float uGain;  // how quickly a letter turns as energy lands on it
+uniform float uKnee;  // how much has to land before anything happens
 
-// Glyph coverage in the red channel, baked once per layout in the hero
-// panel's own coordinates. See type_glow.dart.
-uniform sampler2D uMask;
+// 0 = the letter's colour, opaque; the glyph coverage is applied by the
+// painter. 1 = the bloom source, whose alpha is how hard this point is driven,
+// so only the energetic parts of a word spill light into the air.
+uniform float uMode;
 
 out vec4 fragColor;
 
@@ -69,6 +69,12 @@ const vec3 kAccent = vec3(1.0, 0.353, 0.212);
 const float kCubeX = 0.5;
 const float kCubeY = 0.34;
 const float kCubeSize = 0.26;
+
+// The statement's ink, and what the energy turns it into.
+// ⚠️ kInkColour MUST MATCH Palette.ink, or the letters change colour the
+// moment this shader takes over drawing them.
+const vec3 kInkColour = vec3(0.929, 0.929, 0.941);
+const vec3 kHitColour = vec3(1.0, 0.13, 0.10);
 
 // ── The energy. DUPLICATED FROM scene.frag — keep identical ─────────────────
 
@@ -134,67 +140,51 @@ vec3 surfaceEnergy(vec3 p, vec3 n) {
   return tint * smoothstep(0.28, 0.88, f) * emit * 1.7;
 }
 
-// ── The flare ───────────────────────────────────────────────────────────────
-
-// The colour a letter takes when the energy is on it. Unmistakably red.
-const vec3 kHitColour = vec3(1.0, 0.13, 0.10);
+// ── Entry ───────────────────────────────────────────────────────────────────
 
 void main() {
-  vec2 frag = FlutterFragCoord().xy;
+  // Device pixels back to the panel's own coordinates.
+  vec2 panel = uOrigin + FlutterFragCoord().xy / uPixelRatio;
 
-  // The mask is baked in the panel's own coordinates and the panel travels
-  // with the world, so the lookup shifts by one viewport width per location.
-  vec2 maskUV = vec2(frag.x / uSize.x + uCamera, frag.y / uSize.y);
-  float glyph = texture(uMask, maskUV).r;
-  if (glyph < 0.004) {
-    fragColor = vec4(0.0);
-    return;
-  }
+  // THE SAME CAMERA THE SCENE USES. The panel travels with the world, so a
+  // point's position on SCREEN is its panel position shifted by one viewport
+  // width per location — and the ray is built from the screen position.
+  vec2 screen = vec2(panel.x - uCamera * uViewport.x, panel.y);
 
-  // THE SAME CAMERA THE SCENE USES, resolved against this buffer. Both
-  // cubeCentre and unit scale with the buffer, so the ray through a given
-  // point on screen is identical whatever resolution either pass runs at.
-  vec2 cubeCentre = vec2(uSize.x * (kCubeX - uCamera), uSize.y * kCubeY);
-  float unit = min(uSize.x, uSize.y) * kCubeSize;
+  vec2 cubeCentre =
+      vec2(uViewport.x * (kCubeX - uCamera), uViewport.y * kCubeY);
+  float unit = min(uViewport.x, uViewport.y) * kCubeSize;
 
   vec3 fwd = normalize(kTarget - kEye);
   vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
   vec3 up = cross(fwd, right);
 
-  vec2 uv = vec2((frag.x - cubeCentre.x) / unit,
-                 -(frag.y - cubeCentre.y) / unit);
+  vec2 uv = vec2((screen.x - cubeCentre.x) / unit,
+                 -(screen.y - cubeCentre.y) / unit);
   vec3 rd = normalize(fwd * kFocal + right * uv.x + up * uv.y);
 
   // The panel's front face — the glass the statement stands against.
-  if (rd.z <= 1e-5) {
-    fragColor = vec4(0.0);
-    return;
-  }
-  float t = (kEdgeZ - kSlab - kEye.z) / rd.z;
-  if (t <= 0.0) {
-    fragColor = vec4(0.0);
-    return;
+  float landed = 0.0;
+  if (rd.z > 1e-5) {
+    float t = (kEdgeZ - kSlab - kEye.z) / rd.z;
+    if (t > 0.0) {
+      vec3 energy = surfaceEnergy(kEye + rd * t, vec3(0.0, 0.0, -1.0));
+      landed = dot(energy, vec3(0.2126, 0.7152, 0.0722));
+    }
   }
 
-  vec3 energy = surfaceEnergy(kEye + rd * t, vec3(0.0, 0.0, -1.0));
-  float landed = dot(energy, vec3(0.2126, 0.7152, 0.0722));
-
-  // How much of the letter the energy has taken over. Straight and linear —
-  // no amplification curve, no knee. More energy, more red.
+  // How far the energy has driven this part of the letter. Straight and
+  // linear — no amplification curve.
   float a = clamp((landed - uKnee) * uGain, 0.0, 1.0);
-  if (a < 0.004) {
-    fragColor = vec4(0.0);
-    return;
-  }
 
-  // ⚠️ THIS REPLACES THE LETTER'S COLOUR, IT DOES NOT ADD TO IT, and that is
-  // why the painter composites it with source-over rather than plus.
-  //
-  // The statement is white. Adding red to white does nothing — white is
-  // already at the top of every channel, so an additive layer is invisible on
-  // it no matter how strong. The only way a white letter can turn red is for
-  // something to be painted OVER it. The crisp glyphs underneath still supply
-  // the shape, because this is confined to the glyph coverage.
-  float alpha = clamp(a * glyph, 0.0, 1.0);
-  fragColor = vec4(kHitColour * alpha, alpha);
+  if (uMode < 0.5) {
+    // THE LETTER'S COLOUR. Opaque: the glyph coverage is applied afterwards by
+    // compositing against the rasterised type, which is the only edge in the
+    // whole effect.
+    fragColor = vec4(mix(kInkColour, kHitColour, a), 1.0);
+  } else {
+    // THE BLOOM SOURCE. Only the driven parts spill light, so a word at rest
+    // throws nothing into the air. Premultiplied.
+    fragColor = vec4(kHitColour * a, a);
+  }
 }
