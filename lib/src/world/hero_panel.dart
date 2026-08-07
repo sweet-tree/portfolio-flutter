@@ -76,9 +76,19 @@ class _HeroPanelState extends State<HeroPanel> {
                         maxHeight: constraints.maxHeight * statementShare,
                       ),
                       child: _Name(
-                        title: location.title,
+                        // Breaks authored per frame shape: a wide frame gets
+                        // the subject and the span, a narrow one splits the
+                        // span again so the last line stays readable.
+                        lines: context.isCompact
+                            ? location.titleCompact
+                            : location.titleWide,
                         path: location.path,
                         panel: _panel,
+                        // Flush left, like everything else in the hero. Each
+                        // line is set to the measure anyway, so this only
+                        // decides where the lines that fall short of it sit —
+                        // and the composition aligns to one margin.
+                        align: TextAlign.start,
                       ),
                     ),
                   ),
@@ -94,99 +104,184 @@ class _HeroPanelState extends State<HeroPanel> {
   }
 }
 
-/// The dominant mass, sized to fill the frame it is given.
+/// Baseline-to-baseline distance, as a fraction of the LARGEST line's size.
 ///
-/// A `FittedBox` cannot do this job: it scales a pre-laid-out block, so the
-/// line breaks are fixed before scaling. Breaks chosen for 16:9 leave a phone
-/// with two very long lines that have to shrink to almost nothing to fit the
-/// width — which is exactly what the first phone screenshot showed.
+/// ⚠️ ONE VALUE FOR THE WHOLE BLOCK, not a multiple of each line's own size.
+/// Leading is a property of a paragraph, not of a line: setting it per line
+/// means the smaller line gets a proportionally smaller gap, so a stack of
+/// differently-sized lines ends up unevenly spaced. Each line's height
+/// multiplier is derived from this and its own size, which is what keeps the
+/// baselines evenly spaced whatever the sizes turn out to be.
 ///
-/// Instead the text WRAPS to the available width and the font size is solved
-/// for: binary search the largest size whose wrapped block still fits the box.
-/// Wide frames get two lines, tall narrow frames get four or five, and both
-/// fill their space.
+/// Below 1 because display type set flush wants to sit close, or the block
+/// reads as separate sentences stacked rather than as one statement.
+const double kLeading = 0.92;
+
+/// How much larger the biggest line may be set than the smallest.
+///
+/// ⚠️ THE SIZE RATIO HAS TO BE A DECISION. Setting every line to the measure
+/// means the size is decided by the character count — eighteen characters
+/// against thirty-two puts the first line at nearly 1.8x the second, which is
+/// not a ratio anyone would choose. Past this cap a line stops filling the
+/// measure and simply sets flush left with a ragged right, which is ordinary
+/// editorial setting; the alternative is a headline whose proportions are an
+/// accident of how the sentence happens to divide.
+const double kMaxLineRatio = 1.32;
+
+/// Optical tracking, as a fraction of the em, at the ends of the display range.
+///
+/// ⚠️ TRACKING IS NOT ONE CONSTANT. Large type can carry more negative
+/// tracking than small type — the counters and sidebearings are relatively
+/// larger, so tightening reads as confidence rather than as collision. A flat
+/// -3.5% across a 2:1 size range was too tight at both ends: it collided the
+/// S and the y in "Systems" at the large end and closed up the small line at
+/// the other.
+// ⚠️ THESE ARE APPLIED ON TOP OF THE FONT'S OWN KERNING, not instead of it.
+// The typeface has already decided how close "Sy" should sit — the y's arm
+// tucks under the S — and letterSpacing then removes more space from that
+// pair uniformly. So tracking does not merely tighten the average; it eats the
+// adjustment the font had already made, and the tightest pairs collide first.
+// Roboto's default spacing is close to begin with and does not want much.
+const double kTrackTight = -0.014; // at kTrackLarge and above
+const double kTrackLoose = -0.006; // at kTrackSmall and below
+const double kTrackSmall = 40;
+const double kTrackLarge = 220;
+
+/// The dominant mass: every line SET TO THE MEASURE.
+///
+/// ⚠️ THE BREAKS ARE AUTHORED AND EACH LINE IS SIZED SEPARATELY, which is not
+/// how this started and is the only version that survives a phone.
+///
+/// It used to pick one size for the whole statement and let the text wrap
+/// wherever the width ran out. Two things were wrong with that. On a narrow
+/// frame the wrap chose five lines of small type; and the fit test only asked
+/// whether the BLOCK fitted, never whether a WORD did — so at some sizes
+/// "Production" was wider than the column and Flutter broke it down the
+/// middle. A size that splits a word must be unreachable, not unlikely.
+///
+/// So the copy carries its own breaks (one set per frame shape) and each line
+/// is solved independently for the size that makes it exactly fill the column.
+/// A line with more characters comes out smaller, the block is flush on both
+/// edges without any justification trickery, and no wrap decision is left to
+/// chance — which also means no word can ever be broken, because no line is
+/// ever asked to wrap at all.
 class _Name extends StatelessWidget {
   const _Name({
-    required this.title,
+    required this.lines,
     required this.path,
     required this.panel,
+    required this.align,
   });
 
-  final String title;
+  /// The statement, already broken for this frame.
+  final List<String> lines;
   final String path;
+  final TextAlign align;
 
   /// The hero panel, which the mask measures the block's position against.
   final GlobalKey panel;
 
-  /// Tracking scales with size, so it has to be recomputed per candidate.
-  TextStyle _sized(TextStyle base, double size) =>
-      base.copyWith(fontSize: size, letterSpacing: size * -0.035);
-
-  /// Lays the text out at a candidate size and reports how ragged it is.
+  /// Optical tracking for a given size, on a curve rather than a constant.
   ///
-  /// 0 means every line is the same width; 1 means one line is empty next to a
-  /// full one. A trailing widow — "pixel." alone on the last line — scores
-  /// terribly here, which is exactly what we want it to do.
-  double _rag(String text, TextStyle style, double maxWidth) {
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: maxWidth);
-    final lines = painter.computeLineMetrics();
-    if (lines.length < 2) return 0;
-    var widest = 0.0;
-    var narrowest = double.infinity;
-    for (final line in lines) {
-      if (line.width > widest) widest = line.width;
-      if (line.width < narrowest) narrowest = line.width;
-    }
-    return widest == 0 ? 0 : (widest - narrowest) / widest;
+  /// Large type carries more negative tracking than small type does — its
+  /// counters and sidebearings are relatively larger, so tightening reads as
+  /// confidence rather than as letters colliding.
+  double _tracking(double size) {
+    final t = ((size - kTrackSmall) / (kTrackLarge - kTrackSmall)).clamp(
+      0.0,
+      1.0,
+    );
+    return size * (kTrackLoose + (kTrackTight - kTrackLoose) * t);
   }
 
-  bool _fits(String text, TextStyle style, BoxConstraints box) {
+  /// [height] is left null while measuring — leading cannot be decided until
+  /// every line's size is known, because it belongs to the block.
+  TextStyle _sized(TextStyle base, double size, [double? height]) =>
+      base.copyWith(
+        fontSize: size,
+        letterSpacing: _tracking(size),
+        height: height,
+        // Kerning asked for explicitly rather than assumed. It is the one
+        // thing standing between the S and the y, and a display setting is
+        // where its absence shows first.
+        fontFeatures: const [FontFeature.enable('kern')],
+      );
+
+  /// How wide one line sets in [style], with no wrapping allowed.
+  double _widthOf(String text, TextStyle style) {
     final painter = TextPainter(
       text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
-    )..layout(maxWidth: box.maxWidth);
-    return painter.height <= box.maxHeight && painter.width <= box.maxWidth;
+    )..layout();
+    final width = painter.width;
+    painter.dispose();
+    return width;
+  }
+
+  /// The size at which [text] exactly fills [measure].
+  double _solve(String text, TextStyle base, double measure) {
+    var lo = 8.0;
+    var hi = 520.0;
+    for (var i = 0; i < 18; i++) {
+      final mid = (lo + hi) / 2;
+      if (_widthOf(text, _sized(base, mid)) <= measure) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
   }
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final base = AppType.display(context);
-      var lo = 12.0;
-      var hi = 420.0;
-      // 16 iterations resolves to well under a pixel over this range, and
-      // runs once per layout — cheap next to a full-screen shader.
-      for (var i = 0; i < 16; i++) {
-        final mid = (lo + hi) / 2;
-        if (_fits(title, _sized(base, mid), constraints)) {
-          lo = mid;
-        } else {
-          hi = mid;
-        }
+      final measure = constraints.maxWidth;
+
+      // Every line to the measure...
+      var sizes = [for (final line in lines) _solve(line, base, measure)];
+
+      // ...then the spread capped, so the proportions are chosen rather than
+      // inherited from how the sentence happens to divide. A line held back by
+      // the cap stops filling the measure and sets ragged right.
+      final smallest = sizes.reduce((a, b) => a < b ? a : b);
+      sizes = [
+        for (final size in sizes)
+          size > smallest * kMaxLineRatio ? smallest * kMaxLineRatio : size,
+      ];
+
+      // Leading is ONE distance for the block, taken from the largest line.
+      var largest = sizes.reduce((a, b) => a > b ? a : b);
+      var leading = largest * kLeading;
+
+      // The stack is exactly that distance per line, so fitting the box is a
+      // single scale of everything rather than a per-line adjustment.
+      final stack = leading * sizes.length;
+      if (stack > constraints.maxHeight && stack > 0) {
+        final shrink = constraints.maxHeight / stack;
+        sizes = [for (final size in sizes) size * shrink];
+        largest *= shrink;
+        leading *= shrink;
       }
 
-      // The largest size that FITS is not the best size. At the maximum the
-      // wrap fell as three lines with "pixel." orphaned on the last one, which
-      // reads as broken. Give up a little scale for an even block: search
-      // down to 80% of the maximum and take the least ragged result.
-      var best = lo;
-      var bestRag = _rag(title, _sized(base, lo), constraints.maxWidth);
-      for (var i = 1; i <= 20; i++) {
-        final candidate = lo * (1 - i * 0.01);
-        if (candidate < lo * 0.8) break;
-        if (!_fits(title, _sized(base, candidate), constraints)) continue;
-        final rag = _rag(title, _sized(base, candidate), constraints.maxWidth);
-        // Needs to be meaningfully better, or every layout drifts smaller for
-        // a rounding-error improvement.
-        if (rag < bestRag - 0.04) {
-          best = candidate;
-          bestRag = rag;
-        }
-      }
-      lo = best;
+      // Each line's multiplier is whatever makes ITS box that one distance,
+      // which is what keeps the baselines evenly spaced across sizes.
+      final heights = [for (final size in sizes) leading / size];
+
+      // One paragraph with a style per line — NOT a Column of Texts. The mask
+      // has to be a single rasterisation of the whole statement, and separate
+      // widgets would mean tracking each one's position and reconciling them,
+      // which is the exact problem the single rasterisation exists to avoid.
+      TextSpan span(Color colour) => TextSpan(
+        children: [
+          for (var i = 0; i < lines.length; i++)
+            TextSpan(
+              text: i == lines.length - 1 ? lines[i] : '${lines[i]}\n',
+              style: _sized(base, sizes[i], heights[i]).copyWith(color: colour),
+            ),
+        ],
+      );
 
       return SizedBox(
         width: double.infinity,
@@ -194,26 +289,26 @@ class _Name extends StatelessWidget {
         // where the field lives. Centring it leaves a dead band underneath.
         child: Align(
           alignment: Alignment.bottomLeft,
-          // The mask is built from EXACTLY these three values — the same
-          // string, the same solved style, the same wrap width the visible
-          // text is laid out with. Passing anything derived or approximate
-          // here is what puts the light out of register with the letters.
+          // The mask is built from EXACTLY what the visible text is built
+          // from — the same span, the same measure, the same alignment.
+          // Anything derived or approximate here is what puts the light out of
+          // register with the letters.
           child: TypeMaskCapture(
             panel: panel,
-            text: title,
-            style: _sized(base, lo),
-            maxWidth: constraints.maxWidth,
-            // The Text still lays the statement out and still carries it for a
+            span: span(const Color(0xFFFFFFFF)),
+            signature: Object.hash(Object.hashAll(lines), Object.hashAll(sizes),
+                measure, align),
+            maxWidth: measure,
+            textAlign: align,
+            // The text still lays the statement out and still carries it for a
             // screen reader — but once the glow is drawing the letters it
             // paints transparent, so they are never rasterised twice. Until
             // then it paints normally, so the sentence is never missing: not
             // while the shader loads, not if it fails to load at all.
-            builder: (context, {required visible}) => Text(
-              title,
+            builder: (context, {required visible}) => Text.rich(
+              span(visible ? Palette.ink : const Color(0x00000000)),
               key: Key('title-$path'),
-              style: visible
-                  ? _sized(base, lo)
-                  : _sized(base, lo).copyWith(color: const Color(0x00000000)),
+              textAlign: align,
             ),
           ),
         ),

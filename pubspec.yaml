@@ -30,6 +30,35 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+  # ── Two faces, both VARIABLE, both bundled ────────────────────────────────
+  #
+  # Bundled rather than fetched: a runtime font request is a second origin on
+  # the critical path, and cross-origin isolation would block it anyway.
+  #
+  # ARCHIVO is the display face. A UI text face like Roboto is drawn to hold
+  # up at 14px; at 150px its shapes are generic and its spacing collapses the
+  # moment any tracking is applied — which is exactly the "Sy" collision that
+  # sent us looking. Archivo carries a WIDTH axis as well as weight, so a line
+  # can be fitted to the measure by adjusting its width instead of its size,
+  # which is how flush setting is actually done.
+  #
+  # INTER is the UI face, chosen for the OPTICAL SIZE axis: the typeface itself
+  # tightens spacing and refines detail as the size grows, instead of a
+  # hand-guessed tracking curve doing it badly.
+  #
+  # ⚠️ SUBSET AND AXIS-TRIMMED, and it has to stay that way. Raw they are
+  # 1.5MB; cut to Latin plus the two marks this site actually uses (· and →)
+  # and with the unused ends of the axes removed, they are 168KB gzipped
+  # together. Replacing either file with a full download would quietly put a
+  # megabyte back on first paint.
+  fonts:
+    - family: Archivo
+      fonts:
+        - asset: fonts/Archivo-display.ttf
+    - family: Inter
+      fonts:
+        - asset: fonts/Inter-ui.ttf
+
   # Fragment shaders are core Flutter — no package, no asset payload beyond the
   # compiled program itself.
   shaders:

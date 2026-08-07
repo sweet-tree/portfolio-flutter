@@ -19,7 +19,8 @@ class Location {
     required this.path,
     required this.label,
     required this.role,
-    required this.title,
+    required this.titleWide,
+    required this.titleCompact,
   });
 
   /// The real URL. Has to survive a refresh and paste into a CV.
@@ -35,9 +36,23 @@ class Location {
   ///
   /// A visitor has about ten seconds and one question. The largest element has
   /// to answer it, and a name answers nothing — so the name is metadata in the
-  /// rail and this carries the claim. Later this is what the type shader binds
-  /// to, which is why it stays short.
-  final String title;
+  /// rail and this carries the claim.
+  ///
+  /// ⚠️ THE LINE BREAKS ARE AUTHORED, ONE SET PER FRAME SHAPE, and they are
+  /// not a formatting detail. Each line is set to the MEASURE — sized
+  /// independently so it fills the column edge to edge — so a break decides
+  /// how large its line ends up being. Left to wrap itself the statement broke
+  /// wherever the width happened to run out, which on a phone meant five lines
+  /// of small type and, at some sizes, a word split down the middle.
+  final List<String> titleWide;
+
+  /// The same statement broken for a narrow frame, where it needs more lines
+  /// and each one has to stay readable.
+  final List<String> titleCompact;
+
+  /// The statement as one string — for semantics, and for anything that needs
+  /// the sentence rather than its setting.
+  String get title => titleWide.join(' ');
 
   /// Filler, sized to overflow the panel so scrolling has something to do.
   String get body => List.filled(6, _filler).join('\n\n');
@@ -63,23 +78,36 @@ const List<Location> kLocations = [
     // The claim. Answers "are they any good" without a number, and reads the
     // same to a hiring manager and to someone shopping for a website:
     // "production" means live and finished, the two endpoints give the span.
-    // NO hard line breaks. Breaks that suit a 16:9 frame make the type tiny
-    // on a phone, where the same two long lines have to shrink to fit the
-    // width. The statement wraps to whatever the frame is and is sized to
-    // fill it — see _Name.
-    title: 'Production systems from raw data to the last pixel.',
+    //
+    // Broken so the subject stands alone and the span follows it. The second
+    // line carries more characters into the same width, so it sets smaller —
+    // which is the point of setting each line to the measure rather than
+    // choosing one size for the block.
+    titleWide: [
+      'Production Systems',
+      'from raw data to the last pixel.',
+    ],
+    // A narrow frame needs the span split again, or the third line would be
+    // set so small that the block stops reading as one statement.
+    titleCompact: [
+      'Production Systems',
+      'from raw data',
+      'to the last pixel.',
+    ],
   ),
   Location(
     path: '/work',
     label: 'Work',
     role: 'PLACEHOLDER ROLE',
-    title: 'Section Two',
+    titleWide: ['Section Two'],
+    titleCompact: ['Section Two'],
   ),
   Location(
     path: '/about',
     label: 'About',
     role: 'PLACEHOLDER ROLE',
-    title: 'Section Three',
+    titleWide: ['Section Three'],
+    titleCompact: ['Section Three'],
   ),
 ];
 

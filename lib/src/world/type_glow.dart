@@ -117,9 +117,10 @@ final ValueNotifier<bool> typeGlowReady = ValueNotifier<bool>(false);
 class TypeMaskCapture extends StatefulWidget {
   const TypeMaskCapture({
     required this.panel,
-    required this.text,
-    required this.style,
+    required this.span,
+    required this.signature,
     required this.maxWidth,
+    required this.textAlign,
     required this.builder,
     super.key,
   });
@@ -129,9 +130,18 @@ class TypeMaskCapture extends StatefulWidget {
 
   /// Exactly what the visible text is given. Any divergence here is a
   /// divergence between the colour and the letters.
-  final String text;
-  final TextStyle style;
+  ///
+  /// A SPAN, not a string with a style: the statement is set with a different
+  /// size per line, so it is one paragraph carrying several styles, and a
+  /// single style could not describe it.
+  final TextSpan span;
   final double maxWidth;
+  final TextAlign textAlign;
+
+  /// Changes whenever the setting does. Spans do not compare usefully and
+  /// rebuilding the rasterisation every frame would be waste, so the caller
+  /// hands over something cheap that identifies this particular setting.
+  final Object signature;
 
   /// Builds the text. `visible` is false once the glow has taken over drawing
   /// it, at which point the widget should paint nothing while still laying out
@@ -146,7 +156,7 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
   final GlobalKey _block = GlobalKey();
   Size? _lastViewport;
   Offset? _lastOrigin;
-  TextStyle? _lastStyle;
+  Object? _lastSignature;
   double? _lastRatio;
 
   void _rebuild() {
@@ -161,38 +171,33 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
     final origin = panel.globalToLocal(block.localToGlobal(Offset.zero));
     if (viewport == _lastViewport &&
         origin == _lastOrigin &&
-        widget.style == _lastStyle &&
+        widget.signature == _lastSignature &&
         ratio == _lastRatio) {
       return;
     }
     if (viewport.isEmpty || block.size.isEmpty) return;
     _lastViewport = viewport;
     _lastOrigin = origin;
-    _lastStyle = widget.style;
+    _lastSignature = widget.signature;
     _lastRatio = ratio;
 
-    // ⚠️ THE STYLE PASSED IN IS NOT THE STYLE THE TEXT IS DRAWN WITH.
+    // ⚠️ THE SPAN PASSED IN IS NOT WHAT THE TEXT IS DRAWN FROM.
     //
-    // A `Text` widget merges the ambient DefaultTextStyle into whatever style
-    // it is given, then hands the result to a TextPainter along with the
-    // textScaler, directionality, width basis and height behaviour it reads
-    // from context. Feed a TextPainter only the explicit style and it lays the
-    // same string out with slightly different metrics — close enough to look
-    // right, wrong by pixels, which is exactly what this cannot afford. So the
-    // same inputs are reconstructed here. Anything `Text` starts reading from
-    // context in future has to be added to this list.
+    // `Text.rich` wraps the span in the ambient DefaultTextStyle and hands the
+    // result to a TextPainter along with the textScaler, directionality, width
+    // basis and height behaviour it reads from context. Give a bare
+    // TextPainter only the explicit span and it lays the same statement out
+    // with slightly different metrics — close enough to look right, wrong by
+    // pixels, which is exactly what this cannot afford. So the same inputs are
+    // reconstructed here. Anything `Text` starts reading from context in
+    // future has to be added to this list.
     final defaults = DefaultTextStyle.of(context);
-    var effective = widget.style;
-    if (effective.inherit) effective = defaults.style.merge(effective);
 
     final painter = TextPainter(
-      text: TextSpan(
-        // White: the rasterisation is a SHAPE. What colour the statement ends
-        // up is decided per pixel by the shader.
-        text: widget.text,
-        style: effective.copyWith(color: const Color(0xFFFFFFFF)),
-      ),
-      textAlign: defaults.textAlign ?? TextAlign.start,
+      // The span is already white: the rasterisation is a SHAPE, and what
+      // colour the statement ends up is decided per pixel by the shader.
+      text: TextSpan(style: defaults.style, children: [widget.span]),
+      textAlign: widget.textAlign,
       textDirection: Directionality.of(context),
       textScaler: MediaQuery.textScalerOf(context),
       maxLines: defaults.maxLines,
