@@ -32,10 +32,12 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
+import 'package:portfolio/src/query_params.dart';
 import 'package:portfolio/src/world/shaders.dart';
 
 // ── The dials ───────────────────────────────────────────────────────────────
@@ -58,7 +60,10 @@ const double kGlowKnee = 0;
 
 /// How far the light spills into the air around a word, as a fraction of the
 /// viewport's height. 0 turns the spill off entirely.
-const double kGlowBloom = 0.0025;
+///
+/// `?bloom=0` to switch it off — the fastest way to find out whether a
+/// softness or a blockiness around the letters is the spill or the type.
+double get kGlowBloom => qDouble('bloom', 0.0025).clamp(0, 0.05);
 
 /// How much of the spill is kept.
 ///
@@ -76,15 +81,35 @@ const double kGlowBloomStrength = 0.3;
 /// source is its own pass — plus a blur over an area that size. It was more
 /// fill rate than the entire scene shader, and it took the 11 to 17 FPS.
 ///
-/// Only the MASK needs resolution. The colour is a smooth energy gradient with
-/// no detail in it whatsoever, and every edge in the result comes from the
-/// glyph image, which is still rasterised at full device resolution. So this
-/// is a fraction of a LOGICAL pixel and the letters stay exactly as sharp.
-const double kColourScale = 0.4;
+/// The MASK is what carries the edges, and it is always at full device
+/// resolution, so the letters' outlines stay sharp whatever this is set to.
+///
+/// ⚠️ BUT "THE COLOUR HAS NO DETAIL IN IT" IS ONLY TRUE FOR THIN TYPE, and
+/// that is what this originally assumed. 0.4 of a logical pixel is one colour
+/// sample per seven device pixels on a 3x phone. A hairline stroke is narrower
+/// than that, so it takes a single colour and the coarseness cannot be seen —
+/// which is why this was invisible with Archivo and Cinzel. Lora's strokes are
+/// the fattest tested, and at a heavier weight they are fatter still: wide
+/// enough to show the colour buffer's own blocks INSIDE a letter. The
+/// pixellation is ours, not the typeface's.
+///
+/// Overridable as `?cs=` so the cost of fixing it can be measured on a real
+/// phone rather than argued about — this is the one knob that took an iPhone
+/// 11 to 17 FPS, so it is not free.
+double get kColourScale => qDouble('cs', 0.4).clamp(0.1, 3.0);
 
 /// The bloom source is blurred immediately afterwards, so it can be coarser
 /// still. Resolution spent here is thrown away by the blur by definition.
-const double kBloomScale = 0.22;
+///
+/// ⚠️ THAT IS ONLY TRUE WHILE THE BLUR IS WIDER THAN THE SAMPLING, and here it
+/// is not. 0.22 of a logical pixel puts one sample every ~4.5 logical pixels,
+/// while the blur's sigma is about 2 — so the buffer's own blocks are LARGER
+/// than the smoothing meant to hide them, and the halo can read as blocky
+/// rather than soft. Heavier type throws more spill, which is why it shows up
+/// at high weights first.
+///
+/// `?bscale=` to test the cost of fixing it on a real device.
+double get kBloomScale => qDouble('bscale', 0.22).clamp(0.05, 2.0);
 
 /// The statement, rasterised once. Alpha is the glyph coverage — the real one,
 /// the only one — and there is no second rasterisation anywhere.
@@ -238,27 +263,40 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
           DefaultTextHeightBehavior.maybeOf(context),
     )..layout(maxWidth: widget.maxWidth);
 
-    // The painter's own height, not the render object's. The letterforms hang
-    // BELOW their line box — the display style sets a line height of 1.02
-    // while Roboto's ink is about 1.17 em tall — so every descender lives
-    // outside the widget's box. Sizing to the box is what cut the bottom off
-    // every p and y in a dead straight line.
-    final block2 = Rect.fromLTWH(
-      origin.dx,
-      origin.dy,
-      block.size.width,
-      painter.height,
-    );
+    // ⚠️ THE CAPTURE IS SIZED BY INK, NOT BY LAYOUT, and the difference is a
+    // sliced-off descender.
+    //
+    // A line box is not a bounding box. The block is set with a leading of 0.92
+    // — deliberately TIGHTER than the em, because display type set flush wants
+    // to sit close — so the boxes overlap the ink by design and the last line's
+    // descenders hang below the paragraph entirely. Sizing the capture to
+    // `painter.height` therefore cuts every p, y and comma off in a dead
+    // straight line. It survived three typefaces and failed on the fourth,
+    // because how far a descender reaches is a property of the face: Lora's is
+    // about 0.21em where the others were shallower.
+    //
+    // So the area is padded by half the tallest line box, which is more than
+    // any Latin face's ink can escape by. The cost is a few transparent pixels
+    // in the mask, which `dstIn` removes for free. Guessing the exact overhang
+    // per face would be smaller and wrong the next time the face changes.
+    final metrics = painter.computeLineMetrics();
+    final tallest = metrics.isEmpty
+        ? painter.height
+        : metrics.map((m) => m.height).reduce(math.max);
+    final padY = tallest * 0.5;
+    // Sideways too, though by less: side bearings and the odd overhanging
+    // terminal put ink a little outside the advance width.
+    final padX = tallest * 0.1;
 
     // Snapped to the pixel grid so one image pixel is one screen pixel: the
     // block's origin is fractional, falling out of a font-size search and a
     // bottom alignment, and drawing an integer-sized image into a fractional
     // rectangle resamples the whole thing by a fraction of a pixel.
     final area = Rect.fromLTRB(
-      block2.left.floorToDouble(),
-      block2.top.floorToDouble(),
-      block2.right.ceilToDouble(),
-      block2.bottom.ceilToDouble(),
+      (origin.dx - padX).floorToDouble(),
+      (origin.dy - padY).floorToDouble(),
+      (origin.dx + block.size.width + padX).ceilToDouble(),
+      (origin.dy + painter.height + padY).ceilToDouble(),
     );
 
     final width = (area.width * ratio).round();

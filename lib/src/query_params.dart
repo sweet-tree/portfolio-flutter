@@ -16,3 +16,9 @@ double qDouble(String key, double fallback) =>
 
 /// Whether query parameter [key] is present and set to `1`.
 bool qFlag(String key) => Uri.base.queryParameters[key] == '1';
+
+/// String query parameter [key], or [fallback] when absent or empty.
+String qString(String key, String fallback) {
+  final value = Uri.base.queryParameters[key];
+  return value == null || value.isEmpty ? fallback : value;
+}

@@ -19,8 +19,7 @@ class Location {
     required this.path,
     required this.label,
     required this.role,
-    required this.titleWide,
-    required this.titleCompact,
+    required this.statement,
   });
 
   /// The real URL. Has to survive a refresh and paste into a CV.
@@ -38,21 +37,34 @@ class Location {
   /// to answer it, and a name answers nothing — so the name is metadata in the
   /// rail and this carries the claim.
   ///
-  /// ⚠️ THE LINE BREAKS ARE AUTHORED, ONE SET PER FRAME SHAPE, and they are
-  /// not a formatting detail. Each line is set to the MEASURE — sized
-  /// independently so it fills the column edge to edge — so a break decides
-  /// how large its line ends up being. Left to wrap itself the statement broke
-  /// wherever the width happened to run out, which on a phone meant five lines
-  /// of small type and, at some sizes, a word split down the middle.
-  final List<String> titleWide;
-
-  /// The same statement broken for a narrow frame, where it needs more lines
-  /// and each one has to stay readable.
-  final List<String> titleCompact;
+  /// ⚠️ EVERY ARRANGEMENT THE STATEMENT MAY TAKE. The layout picks; the copy
+  /// only says which breaks are ALLOWED.
+  ///
+  /// Three levels, and each means something:
+  ///   · the outer list is the candidate ARRANGEMENTS — two lines, three, four
+  ///   · each arrangement is a list of PARTS — the subject, then the qualifier
+  ///   · each part is a list of authored LINES
+  ///
+  /// The parts are the sentence's own structure, and they are not decoration:
+  /// the layout sets them in different weights with air between them, so the
+  /// eye reads one claim plus its qualification rather than four equal lines.
+  ///
+  /// The lines are authored rather than wrapped because each one is set to the
+  /// MEASURE, so a break decides how large its line ends up. Left to wrap
+  /// itself the statement broke wherever the width ran out — five lines of
+  /// small type on a phone and, at some sizes, a word split down the middle.
+  ///
+  /// ⚠️ AND THERE IS NO "WIDE" OR "COMPACT" VERSION ANY MORE. A width
+  /// breakpoint cannot tell a phone in landscape (852 wide, 393 tall) from a
+  /// tablet in portrait (834 wide, 1194 tall), and those two want opposite
+  /// settings. The layout solves every arrangement against the actual frame and
+  /// takes the one that sets the largest leading line; see hero_panel.dart.
+  final List<List<List<String>>> statement;
 
   /// The statement as one string — for semantics, and for anything that needs
   /// the sentence rather than its setting.
-  String get title => titleWide.join(' ');
+  String get title =>
+      statement.first.expand((part) => part).join(' ');
 
   /// Filler, sized to overflow the panel so scrolling has something to do.
   String get body => List.filled(6, _filler).join('\n\n');
@@ -79,43 +91,53 @@ const List<Location> kLocations = [
     // same to a hiring manager and to someone shopping for a website:
     // "production" means live and finished, the two endpoints give the span.
     //
-    // Broken so the subject stands alone and the span follows it. The second
-    // line carries more characters into the same width, so it sets smaller —
-    // which is the point of setting each line to the measure rather than
-    // choosing one size for the block.
-    titleWide: [
-      'Production Systems',
-      'from raw data to the last pixel.',
-    ],
-    // ⚠️ FOUR LINES ON A NARROW FRAME, and "Production Systems" is broken
-    // between its two words.
+    // SUBJECT, then QUALIFIER, in every arrangement. The subject sets heavier
+    // and the qualifier lighter, with a small gap between them, so the eye
+    // reads one claim and its qualification rather than four equal lines.
     //
-    // That is a break between words, not inside one — the thing that must never
-    // happen is "Produc-tion". Three lines measured at 10% of the frame's
-    // height against the desktop block's 24%, so the statement read as a
-    // caption rather than the loudest thing on the page. The size is set by the
-    // LONGEST line, so adding a line only helps if it shortens that line, which
-    // is why the subject splits rather than the span.
-    titleCompact: [
-      'Production',
-      'Systems',
-      'from raw data',
-      'to the last pixel.',
+    // The qualifier carries more characters into the same width, so it sets
+    // smaller on its own — that contrast is free, and is the point of setting
+    // each line to the measure rather than choosing one size for the block.
+    //
+    // ⚠️ THE FOUR-LINE VERSION BREAKS "Production Systems" BETWEEN ITS TWO
+    // WORDS, which is a break between words and not inside one — the thing
+    // that must never happen is "Produc-tion". It exists because the size is
+    // set by the LONGEST line, so adding a line only buys size if it shortens
+    // that line; splitting the subject does, splitting the span does not.
+    statement: [
+      [
+        ['Production Systems'],
+        ['from raw data to the last pixel.'],
+      ],
+      [
+        ['Production Systems'],
+        ['from raw data', 'to the last pixel.'],
+      ],
+      [
+        ['Production', 'Systems'],
+        ['from raw data', 'to the last pixel.'],
+      ],
     ],
   ),
   Location(
     path: '/work',
     label: 'Work',
     role: 'PLACEHOLDER ROLE',
-    titleWide: ['Section Two'],
-    titleCompact: ['Section Two'],
+    statement: [
+      [
+        ['Section Two'],
+      ],
+    ],
   ),
   Location(
     path: '/about',
     label: 'About',
     role: 'PLACEHOLDER ROLE',
-    titleWide: ['Section Three'],
-    titleCompact: ['Section Three'],
+    statement: [
+      [
+        ['Section Three'],
+      ],
+    ],
   ),
 ];
 

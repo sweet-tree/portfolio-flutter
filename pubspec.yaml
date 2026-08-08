@@ -35,19 +35,27 @@ flutter:
   # Bundled rather than fetched: a runtime font request is a second origin on
   # the critical path, and cross-origin isolation would block it anyway.
   #
-  # CINZEL is the display face, and it was chosen for the STORY rather than for
-  # its metrics. The site is an ancient object in a future room; Cinzel is
-  # drawn from Roman inscriptional capitals, so the statement reads as carved
-  # rather than typed. It replaced Archivo, which was the better-engineered
-  # face and the wrong voice.
+  # LORA is the display face. Chosen on a real phone against the real scene,
+  # after Archivo, Cinzel, Playfair, Marcellus, Forum and Cormorant were each
+  # built and looked at — twice over, because the ones that won as still images
+  # in Figma lost the moment the energy was moving behind them.
   #
-  # ⚠️ TWO THINGS IT COSTS, both known and accepted:
-  #   · NO WIDTH AXIS — weight only, 400-900. Archivo's `wdth` was what the
-  #     compact layout used to fit lines, so size now absorbs all of it and the
-  #     type is smaller on narrow frames. See hero_panel.dart.
-  #   · ITS LOWERCASE IS SMALL CAPITALS, not a true lowercase. That is the
-  #     design, not a defect — but it means most glyphs sit at about 70% of cap
-  #     height, so the statement reads smaller than its size suggests.
+  # ⚠️ IT WAS CHOSEN FOR THE MECHANISM, and that is the part worth keeping.
+  # The statement is rasterised into a mask and a shader fills it PER PIXEL, so
+  # a stroke only shows the energy travelling through it if the stroke is wide
+  # enough to hold more than one sample of the field. Measured across the whole
+  # shortlist, Lora puts the most ink on the page — 0.102em thick strokes
+  # against Cinzel's 0.075 — and its thinnest stroke is 6.4 device pixels on a
+  # phone against Playfair's 3.6. A hairline takes one colour and reads as
+  # tinted; a fat stroke shows the flow.
+  #
+  # It is also the only CONTEMPORARY face on that list — not a revival of a
+  # historical model — so it carries no period with it. That is deliberate: the
+  # ancient half of the concept belongs to the cube, not to the sentence, which
+  # has to stay credible as an engineering claim.
+  #
+  # Weight axis only, 400-600. No width axis and no optical size, so the
+  # statement is fitted by size alone — see hero_panel.dart.
   #
   # INTER is the UI face, chosen for the OPTICAL SIZE axis: the typeface itself
   # tightens spacing and refines detail as the size grows, instead of a
@@ -55,13 +63,13 @@ flutter:
   #
   # ⚠️ SUBSET AND AXIS-TRIMMED, and it has to stay that way. Raw they are
   # 1.5MB; cut to Latin plus the two marks this site actually uses (· and →)
-  # and with the unused ends of the axes removed, they are 119KB gzipped
+  # and with the unused ends of the axes removed, they are 114KB gzipped
   # together. Replacing either file with a full download would quietly put a
   # megabyte back on first paint.
   fonts:
-    - family: Cinzel
+    - family: Lora
       fonts:
-        - asset: fonts/Cinzel-display.ttf
+        - asset: fonts/Lora-display.ttf
     - family: Inter
       fonts:
         - asset: fonts/Inter-ui.ttf

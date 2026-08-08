@@ -16,6 +16,8 @@
 /// about the style (and any fallback face) still sees the intent.
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
@@ -23,12 +25,27 @@ import 'package:portfolio/src/query_params.dart';
 
 /// The display face: the statement and section headings.
 ///
-/// ⚠️ CINZEL IS AN INSCRIPTIONAL FACE AND BEHAVES LIKE ONE. Its lowercase
-/// glyphs are SMALL CAPITALS — that is the design, since Roman inscriptions had
-/// no lowercase — so most of a Title-case line sits at roughly 70% of cap
-/// height and the statement reads smaller than its font size implies. It also
-/// has no width axis. Both facts are load-bearing in hero_panel.dart.
-const String kDisplayFamily = 'Cinzel';
+/// ⚠️ CHOSEN ON A PHONE AGAINST THE MOVING SCENE, and that method is the point.
+/// Archivo, Cinzel, Playfair, Marcellus, Forum and Cormorant were each built
+/// and looked at as still frames first — and the still frames were wrong twice.
+/// Cinzel won every comparison on the canvas and lost the moment it was live;
+/// Playfair measured best on paper and read as a fairy tale on screen. Nothing
+/// about a typeface on this site can be settled without the energy behind it.
+///
+/// ⚠️ THE DECIDING CRITERION WAS THE MECHANISM, not the letterforms. The
+/// statement is rasterised into a mask and a shader fills it PER PIXEL, so a
+/// stroke shows the energy travelling through it only if it is wide enough to
+/// hold more than one sample of the field. A hairline takes a single colour and
+/// reads as tinted; a fat stroke shows the flow. Measured across the shortlist,
+/// Lora puts the most ink on the page — 0.102em thick strokes against Cinzel's
+/// 0.075 — and its thinnest stroke is 6.4 device pixels on a phone where
+/// Playfair's is 3.6 and Cormorant's 3.2. That is the whole argument.
+///
+/// It is also the only CONTEMPORARY face that was tested — not a revival of a
+/// historical model — so it brings no period with it. Deliberate: the ancient
+/// half of the concept belongs to the cube, and the sentence has to stay
+/// readable as an engineering claim rather than as an inscription.
+const String kDisplayFamily = 'Lora';
 
 /// The text face: nav, labels, the rail, and body copy.
 const String kTextFamily = 'Inter';
@@ -50,20 +67,76 @@ List<FontVariation> _textAxes(double weight, double size) => [
 
 /// Display weight — CONTINUOUS, and overridable live with `?w=`.
 ///
-/// ⚠️ NOT LIMITED TO THE NAMED INSTANCES. Cinzel ships as Regular, Bold and
-/// Black, and design tools only offer those three — but the file is variable
-/// with `wght` 400-900, and asking for the axis by number gets any value in
-/// between. 450 and 500 are real settings that no font menu will show you.
+/// ⚠️ NOT LIMITED TO THE NAMED INSTANCES. Lora is listed as Regular, Medium,
+/// SemiBold and Bold, and design tools only offer those four — but the bundled
+/// file is variable across `wght` 400-600, and asking for the axis by number
+/// gets any value in between. 450 and 520 are real settings that no font menu
+/// will show you.
 ///
-/// That range is exactly where this decision lives. Regular can go fragile on
-/// a dark ground at phone size, because light type on dark bleeds into the
-/// background in the eye (irradiation) and thin strokes lose the most. Bold is
-/// too heavy for a statement that has to sit behind the cube rather than
-/// compete with it. The answer is a number between them, and the honest way to
-/// find it is on a real phone against the real scene rather than by argument.
+/// That range is where the last open question lives. Light type on a dark
+/// ground bleeds into the background in the eye — irradiation — and thin
+/// strokes lose the most, so a phone may want more weight than a desktop. But
+/// the statement also has to sit behind the cube rather than compete with it,
+/// and weight is what makes it compete. The answer is a number, and the honest
+/// way to find it is on a real phone against the moving scene.
 ///
-/// So: `?w=450` on the deployed site, and hand back whichever value wins.
-double get kDisplayWeight => qDouble('w', 400);
+/// So: `?w=450`, and hand back whichever value wins.
+double get kDisplayWeight => qDouble('w', 400).clamp(400, 600);
+
+/// The SUBJECT's weight — heavier than the qualifier that follows it.
+///
+/// ⚠️ WEIGHT IS THE HIERARCHY DEVICE HERE, and it was chosen over tone for a
+/// reason specific to this page: weight is PHYSICAL. A lighter line has less
+/// ink, so there is less area for the energy to fill, and it stays subordinate
+/// even when fully lit. Tone is a brightness claim, and brightness is exactly
+/// what the shader overwrites — a statically dimmed line would be dimmed AND
+/// tinted, and the two would argue every frame.
+///
+/// This is the value for a LARGE frame. Overridable as `?ws=`.
+double get kSubjectWeight => qDouble('ws', 500).clamp(400, 600);
+
+/// How much heavier the subject goes on the smallest frames, in axis units.
+///
+/// ⚠️ A WEIGHT STEP IS ONLY AS VISIBLE AS THE STROKE IT LIVES IN. 500 against
+/// 400 is roughly 0.02em of extra stem — 3.8px at the 190px the desktop sets,
+/// and 0.9px at the 46px a phone sets. The same typographic decision, a quarter
+/// of the effect, which is why the hierarchy read clearly on a desktop and
+/// barely at all on a phone.
+///
+/// So the step is not a constant: it grows as the frame shrinks, the same way
+/// an optical size axis compensates for size rather than pretending one drawing
+/// suits every size. Overridable as `?wsc=` to find the right amount.
+double get kSubjectWeightBoost => qDouble('wsc', 100).clamp(0, 200);
+
+/// The subject's weight for a given frame.
+///
+/// Keyed on the viewport's SHORTEST side rather than on the type's size, which
+/// matters: the size is what the fitting is still solving for, so depending on
+/// it would make the measurement circular — and measuring at the wrong weight
+/// is what wrapped the statement earlier today.
+double subjectWeightFor(Size viewport) {
+  final shortest = math.min(viewport.width, viewport.height);
+  final t = ((720 - shortest) / (720 - 380)).clamp(0.0, 1.0);
+  return (kSubjectWeight + kSubjectWeightBoost * t).clamp(400.0, 600.0);
+}
+
+/// Every axis the display face has, driven by the size actually being set.
+///
+/// ⚠️ `opsz` IS THE WHOLE ARGUMENT FOR PLAYFAIR, so it has to be driven or the
+/// argument is worthless. A face with an optical size axis holds several
+/// designs: sturdier, lower-contrast letterforms for small sizes and finer,
+/// higher-contrast ones for large. Leaving the axis at its default picks one of
+/// those designs and uses it everywhere, which is exactly the failure mode that
+/// makes a text face look generic at 150px and a display face look brittle at
+/// 40. Clamped to the range the file was trimmed to.
+///
+/// Asking for `wdth` and `opsz` on a face that has neither — Cinzel — is
+/// harmless; unknown axes are ignored.
+List<FontVariation> displayAxes(double size, {double? weight}) => [
+  FontVariation('wght', weight ?? kDisplayWeight),
+  const FontVariation('wdth', 100),
+  FontVariation('opsz', size.clamp(24.0, 144.0)),
+];
 
 /// Text styles, resolved against the current viewport width.
 ///
@@ -87,7 +160,7 @@ abstract final class AppType {
       fontSize: size,
       height: 1.02,
       fontWeight: FontWeight.w600,
-      fontVariations: _wght(kDisplayWeight),
+      fontVariations: displayAxes(size),
       color: Palette.ink,
     );
   }
