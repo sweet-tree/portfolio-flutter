@@ -76,7 +76,14 @@ const float kEdgeThickness = 0.055;
 // The table as SOLID GEOMETRY rather than intersecting half-planes.
 // kRound is the radius of every edge; kFillet is the smoothing at the inner
 // corner where the ledge meets the drop.
-const float kTableHalfX = 7.0;   // wide enough to leave the frame
+// ⚠️ WIDE ENOUGH FOR ITS OWN FADE, not merely wide enough to leave the frame.
+// The surface fades with distance from the cube (see `presence` below) and only
+// reaches its cutoff at a radius of about 10. At 7 the sheet ENDED while the
+// surface was still ~2% lit — invisible arithmetic, but the ground here is
+// nearly black, so it drew a hard straight line down the left side where the
+// glass ran out. The camera stands at x = +2.15 and looks back across the
+// sheet, which is why only the left end ever came into frame.
+const float kTableHalfX = 11.0;
 const float kSlab = 0.075;       // sheet thickness
 const float kDropDepth = 6.0;    // how far the panel descends
 const float kRound = 0.028;
@@ -86,8 +93,30 @@ const float kIor = 1.5;             // glass
 const float kGlassThickness = 0.05;
 
 const float kMinRoughness = 0.045;
-const vec3 kBase = vec3(0.043, 0.043, 0.059);
+
+/// ⚠️ THE ONE COLOUR HERE THAT IS NOT FREE TO CHANGE.
+///
+/// This is the page's own background. `Palette.bg` and `web/index.html` both
+/// say `#0B0B0F`, and they have to agree with the shader or the scene shows a
+/// rectangle against the page — most visibly at load, when the HTML background
+/// is painted for a moment before Flutter's first frame arrives.
+///
+/// ⚠️ SO IT IS THE PRE-IMAGE OF #0B0B0F, NOT #0B0B0F ITSELF. Everything this
+/// shader computes is now raw brightness that is tone mapped ONCE at the end
+/// (see the end of main), so a constant that must arrive at a specific colour
+/// has to be the value that lands there AFTER the curve. Solved numerically
+/// against ACESToneMap at kExposure; it renders to exactly 11, 11, 15.
+///
+/// Re-derive it if kExposure changes. Do NOT "fix" it back to 0.043 — that was
+/// correct only while the background was the one thing skipping the curve.
+const vec3 kBase = vec3(0.04842, 0.04839, 0.06014);
 const vec3 kAccent = vec3(1.0, 0.353, 0.212);
+
+/// The single exposure, applied with the tone curve at the very end of main.
+///
+/// It used to be written as a literal 1.25 at five separate call sites, which
+/// is what made it possible for them to drift apart.
+const float kExposure = 1.25;
 
 mat3 rotY(float a) {
   float c = cos(a);
@@ -386,7 +415,17 @@ vec3 starsColor(vec3 dir) {
 
   // Space is not black — a faint cool wash keeps it from reading as a hole in
   // the screen.
-  return c + vec3(0.012, 0.014, 0.024);
+  //
+  // ⚠️ PRE-COMPENSATED, like kBase, and for the same reason: this value has a
+  // stated job, which is to land just above black rather than on it. The tone
+  // curve has a toe, so the original 0.012/0.014/0.024 — authored back when the
+  // sky skipped the curve — arrived at 1, 2, 3 out of 255 and rounded to pure
+  // black in places. Solved numerically to render at 3, 4, 6, which is exactly
+  // where it sat before the curve moved to the end of main.
+  //
+  // This is the only value in the shader chosen for looks that was touched by
+  // that move; every other one is free to be re-tuned by eye.
+  return c + vec3(0.02138, 0.02595, 0.03425);
 }
 
 /// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
@@ -931,9 +970,9 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     if (tr.x > 0.0) {
       vec3 pr = p + n * 1e-3 + rr * tr.x;
       float visr = lightVisibility(pr, nr, spin, rotation);
-      reflected = ACESToneMap(shadeCube(pr, nr, -rr, visr), 1.25);
+      reflected = shadeCube(pr, nr, -rr, visr);
     } else {
-      reflected = ACESToneMap(envColor(rr) * 0.25, 1.25);
+      reflected = envColor(rr) * 0.25;
     }
 
     // Transmission: the background REFRACTED through the surface, not just
@@ -953,7 +992,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     vec3 second = vec3(0.0);
     if (tr2.x > 0.0) {
       vec3 pr2 = p2 + n * 1e-3 + rr2 * tr2.x;
-      second = ACESToneMap(shadeCube(pr2, nr2, -rr2, 1.0), 1.25) * 0.35;
+      second = shadeCube(pr2, nr2, -rr2, 1.0) * 0.35;
     }
 
     // Traced, not tuned: how much of the light and of the sky this point can
@@ -985,7 +1024,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     // normal has turned off vertical, so it follows the ROUNDED edge rather
     // than switching on at a hard boundary.
     vec3 glow = vec3(0.80, 0.86, 1.0) * 2.4 + kAccent * 0.35;
-    diagnostic = mix(diagnostic, ACESToneMap(glow, 1.25), isCutEdge);
+    diagnostic = mix(diagnostic, glow, isCutEdge);
     return mix(background, diagnostic, presence);
 
     // ── THE GLASS MATERIAL — parked, not deleted ─────────────────────────────
@@ -1013,8 +1052,12 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     //
     // Then the cut edge and the presence fade as above:
     //
-    //   surface = mix(surface, ACESToneMap(glow, 1.25), isCutEdge);
+    //   surface = mix(surface, glow, isCutEdge);
     //   return mix(background, surface, presence);
+    //
+    // ⚠️ AND IT STAYS IN RAW BRIGHTNESS, like everything else here. The tone
+    // curve runs once, at the end of main. Do not reintroduce a tone map on
+    // this branch when restoring it.
     //
     // Expect it to be nearly INVISIBLE on its own — that is what clean glass
     // on a dark ground does, and it is why the diagnostic exists. What makes
@@ -1057,9 +1100,23 @@ void main() {
   float spin = 0.0;
   float rotation = ign(fragCoord) * 6.28318530718;
 
-  vec3 col = traceBackdrop(
-    kEye, rd, spin, fragCoord, uvScreen, aspect, rotation
-  );
+  // ⚠️ THE BACKDROP IS TRACED AFTER THE CUBE'S COVERAGE, NOT BEFORE.
+  //
+  // It used to be traced here, along the ray through the pixel's centre, and
+  // that is wrong for exactly the pixels the cube's edge passes through. The
+  // cube's coverage is resolved with 64 samples; the backdrop behind it is
+  // resolved with one. When a pixel straddles the silhouette and its centre
+  // falls INSIDE the cube, that one ray sails past the cube and lands on the
+  // table several units further back — which is lit, unoccluded and bright,
+  // rather than the table at the cube's foot, which is dark and in contact
+  // shadow. Blending that in at the edge drew a bright dashed line tracing the
+  // cube's lower silhouette.
+  //
+  // So the coverage is computed first, and the backdrop is then traced along a
+  // ray through the part of the pixel the cube does NOT cover. Same cost — one
+  // backdrop trace either way — and no supersampling of the shadow and
+  // occlusion tracing, which is what makes supersampling the table
+  // unaffordable in the first place.
 
   // ── The cube ─────────────────────────────────────────────────────────────
   //
@@ -1095,6 +1152,9 @@ void main() {
 
   vec3 sum = vec3(0.0);
   float cov = 0.0;
+  // Where in the pixel the cube ISN'T — see the backdrop note above.
+  vec2 openOffset = vec2(0.0);
+  float openWeight = 0.0;
   // EXACT edge test, alongside the distance band.
   //
   // The band estimates a pixel's distance to the cube by measuring to its
@@ -1156,18 +1216,42 @@ void main() {
         sum += c * hit * w;
         hitWeight += hit * w;
         weightSum += w;
+        // Where inside the pixel the cube is NOT. Averaging the offsets of the
+        // samples that missed gives the centre of the visible sliver, which is
+        // the only place the backdrop should be sampled from.
+        openOffset += offset * (1.0 - hit) * w;
+        openWeight += (1.0 - hit) * w;
       }
     }
     sum /= max(hitWeight, 1e-5);
     cov = hitWeight / max(weightSum, 1e-5);
+    // No uncovered sliver at all means the backdrop is completely hidden, so
+    // its value cannot matter; leave the ray at the centre.
+    if (openWeight > 1e-5) openOffset /= openWeight;
+    else openOffset = vec2(0.0);
   } else {
     float hit;
     sum = shadeCubeRay(rd, spin, hit);
     cov = hit;
   }
 
+  // The backdrop, traced along the ray through the uncovered part of the pixel.
+  // For every pixel the cube's edge does not pass through this is exactly the
+  // centre ray, so nothing else in the frame changes.
+  vec3 backdropRd = rd;
+  if (openOffset != vec2(0.0)) {
+    vec2 uvB = vec2(
+      (fragCoord.x + openOffset.x - uCubeCenter.x) / uCubeUnit,
+      -(fragCoord.y + openOffset.y - uCubeCenter.y) / uCubeUnit
+    );
+    backdropRd = normalize(fwd * kFocal + right * uvB.x + up * uvB.y);
+  }
+  vec3 col = traceBackdrop(
+    kEye, backdropRd, spin, fragCoord, uvScreen, aspect, rotation
+  );
+
   if (cov > 0.0) {
-    col = mix(col, ACESToneMap(sum, 1.25), cov);
+    col = mix(col, sum, cov);
   }
 
   // The flying energy sits in FRONT of everything solid here — the slab hangs
@@ -1178,5 +1262,31 @@ void main() {
     col = col * (1.0 - clouds.a * uClouds) + clouds.rgb * uClouds;
   }
 
-  fragColor = vec4(col, 1.0);
+  // ⚠️ THE TONE CURVE RUNS ONCE, HERE, AND NOWHERE ELSE.
+  //
+  // Everything above is RAW BRIGHTNESS and may exceed 1: the cut edge is 2.4,
+  // the energy peaks near 2, a star is 3. Squashing that into a displayable
+  // range is one operation on the finished picture.
+  //
+  // It used to happen at five separate points — the cube, its reflection, the
+  // second-surface ghost, the cut edge — while the background, the stars and
+  // the energy skipped it entirely. That is not a stylistic difference, it is
+  // arithmetic: squashing two things and then blending them does not give the
+  // same answer as blending and then squashing, because the curve is not a
+  // straight line. The error is invisible while everything is dark and roughly
+  // matched, and it grows exactly as the scene gains bright and dark parts in
+  // the same frame — which is what putting a material on the cube will do.
+  //
+  // Consequences worth knowing, all of them intended:
+  //   · coverage is now averaged in raw brightness before the curve, which is
+  //     the correct order for antialiasing an edge
+  //   · the energy was deliberately over-bright and its peaks now roll off
+  //     instead of clipping flat
+  //   · the curve has a TOE, so the very darkest values get slightly darker
+  //     while mid-tones get brighter — see kBase, which is pre-compensated
+  //
+  // ⚠️ It does NOT change the cube. A pixel fully covered by the cube is
+  // ACESToneMap(sum) either way; only pixels that mix the cube with something
+  // else differ, and there the old order was the wrong one.
+  fragColor = vec4(ACESToneMap(col, kExposure), 1.0);
 }

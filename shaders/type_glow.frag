@@ -153,6 +153,51 @@ vec3 surfaceEnergy(vec3 p, vec3 n) {
   return tint * smoothstep(0.28, 0.88, f) * emit * 1.7;
 }
 
+// ── The tone curve. DUPLICATED FROM scene.frag — keep identical ─────────────
+//
+// ⚠️ IT IS HERE FOR ONE REASON: SO THE LETTERS AND THE GLASS ARE THE SAME
+// COLOUR.
+//
+// The letters take the energy's own hue, which is what makes them read as one
+// substance with the light behind them rather than as two things that happen to
+// match. But the scene draws that energy through a tone curve, and a tone curve
+// is not a straight line — it desaturates as it approaches white. The energy's
+// brightest parts land near (0.79, 1.21, 2.00) in raw brightness, a deep blue,
+// and arrive on screen at roughly (0.79, 0.85, 0.91), which is nearly white.
+//
+// So a hue taken from the RAW energy is not the hue on the glass. Take it from
+// the tone mapped energy and the two agree by construction, at every brightness,
+// without either file carrying a colour the other has to be matched to.
+//
+// The same duplication note applies as to the energy above: Flutter compiles one
+// file per program with no way to share source, so this is a copy, and it and
+// scene.frag's copy have to be edited together.
+const float kExposure = 1.25;
+
+vec3 RRTAndODTFit(vec3 v) {
+  vec3 a = v * (v + 0.0245786) - 0.000090537;
+  vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+  return a / b;
+}
+
+vec3 ACESToneMap(vec3 color, float exposure) {
+  const mat3 inputMat = mat3(
+    vec3(0.59719, 0.07600, 0.02840),
+    vec3(0.35458, 0.90834, 0.13383),
+    vec3(0.04823, 0.01566, 0.83777)
+  );
+  const mat3 outputMat = mat3(
+    vec3(1.60475, -0.10208, -0.00327),
+    vec3(-0.53108, 1.10813, -0.07276),
+    vec3(-0.07367, -0.00605, 1.07602)
+  );
+  color *= exposure / 0.6;
+  color = inputMat * color;
+  color = RRTAndODTFit(color);
+  color = outputMat * color;
+  return clamp(color, 0.0, 1.0);
+}
+
 // ── Entry ───────────────────────────────────────────────────────────────────
 
 void main() {
@@ -184,6 +229,13 @@ void main() {
       energy = surfaceEnergy(kEye + rd * t, vec3(0.0, 0.0, -1.0));
     }
   }
+  // ⚠️ MEASURED ON THE RAW ENERGY, DELIBERATELY — unlike the hue below.
+  //
+  // This is not a colour, it is "how much energy has reached this point", and
+  // uKnee and uGain are calibrated against that quantity. The tone curve
+  // compresses the top of the range, so measuring after it would quietly change
+  // where a letter starts turning. Two different questions, two different
+  // spaces: physics drives the transition, display decides the colour.
   float landed = dot(energy, vec3(0.2126, 0.7152, 0.0722));
 
   // How far the energy has driven this part of the letter. Straight and
@@ -196,8 +248,13 @@ void main() {
   // thing. Retint the fog and the type follows without touching this file,
   // which is the whole reason the effect reads as one substance rather than as
   // two things that happen to match.
-  float peak = max(energy.r, max(energy.g, energy.b));
-  vec3 hue = peak > 1e-4 ? energy / peak : vec3(1.0);
+  //
+  // ⚠️ TAKEN THROUGH THE SAME TONE CURVE THE SCENE DRAWS THE ENERGY WITH, so
+  // this is the hue actually on the glass rather than the hue before the curve
+  // desaturated it. See the note on ACESToneMap above.
+  vec3 shown = ACESToneMap(energy, kExposure);
+  float peak = max(shown.r, max(shown.g, shown.b));
+  vec3 hue = peak > 1e-4 ? shown / peak : vec3(1.0);
 
   if (uMode < 0.5) {
     // THE LETTER'S COLOUR. Opaque: the glyph coverage is applied afterwards by
