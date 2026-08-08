@@ -41,9 +41,11 @@ import 'package:portfolio/src/world/world_view.dart';
 Future<void> main() async {
   final binding = WidgetsFlutterBinding.ensureInitialized();
   await Shaders.load();
-  binding.deferFirstFrame();
+  // ?bare=1 renders the scene alone, so there is no statement to wait for and
+  // holding the frame would only stall on the watchdog.
+  if (!bareScene) binding.deferFirstFrame();
   runApp(const PortfolioApp());
-  _releaseWhenStatementIsSet(binding);
+  if (!bareScene) _releaseWhenStatementIsSet(binding);
 }
 
 /// Releases the held frame once the statement has been rasterised.

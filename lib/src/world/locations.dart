@@ -87,10 +87,18 @@ const List<Location> kLocations = [
       'Production Systems',
       'from raw data to the last pixel.',
     ],
-    // A narrow frame needs the span split again, or the third line would be
-    // set so small that the block stops reading as one statement.
+    // ⚠️ FOUR LINES ON A NARROW FRAME, and "Production Systems" is broken
+    // between its two words.
+    //
+    // That is a break between words, not inside one — the thing that must never
+    // happen is "Produc-tion". Three lines measured at 10% of the frame's
+    // height against the desktop block's 24%, so the statement read as a
+    // caption rather than the loudest thing on the page. The size is set by the
+    // LONGEST line, so adding a line only helps if it shortens that line, which
+    // is why the subject splits rather than the span.
     titleCompact: [
-      'Production Systems',
+      'Production',
+      'Systems',
       'from raw data',
       'to the last pixel.',
     ],

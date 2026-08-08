@@ -19,9 +19,16 @@ library;
 import 'package:flutter/widgets.dart';
 import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
+import 'package:portfolio/src/query_params.dart';
 
 /// The display face: the statement and section headings.
-const String kDisplayFamily = 'Archivo';
+///
+/// ⚠️ CINZEL IS AN INSCRIPTIONAL FACE AND BEHAVES LIKE ONE. Its lowercase
+/// glyphs are SMALL CAPITALS — that is the design, since Roman inscriptions had
+/// no lowercase — so most of a Title-case line sits at roughly 70% of cap
+/// height and the statement reads smaller than its font size implies. It also
+/// has no width axis. Both facts are load-bearing in hero_panel.dart.
+const String kDisplayFamily = 'Cinzel';
 
 /// The text face: nav, labels, the rail, and body copy.
 const String kTextFamily = 'Inter';
@@ -41,15 +48,22 @@ List<FontVariation> _textAxes(double weight, double size) => [
   FontVariation('opsz', size.clamp(14.0, 32.0)),
 ];
 
-/// Display weight, already compensated for the dark ground.
+/// Display weight — CONTINUOUS, and overridable live with `?w=`.
 ///
-/// ⚠️ LIGHT TYPE ON A DARK GROUND READS HEAVIER than the same weight on white
-/// — irradiation: the bright areas bleed into the dark ones in the eye. Near
-/// white on near black at display size is the worst case for it, so the
-/// statement is set a little lighter than the number a light-background design
-/// would use, and lands at the same apparent weight. On a continuous axis this
-/// costs nothing; with static weights it would not be expressible at all.
-const double kDisplayWeight = 560;
+/// ⚠️ NOT LIMITED TO THE NAMED INSTANCES. Cinzel ships as Regular, Bold and
+/// Black, and design tools only offer those three — but the file is variable
+/// with `wght` 400-900, and asking for the axis by number gets any value in
+/// between. 450 and 500 are real settings that no font menu will show you.
+///
+/// That range is exactly where this decision lives. Regular can go fragile on
+/// a dark ground at phone size, because light type on dark bleeds into the
+/// background in the eye (irradiation) and thin strokes lose the most. Bold is
+/// too heavy for a statement that has to sit behind the cube rather than
+/// compete with it. The answer is a number between them, and the honest way to
+/// find it is on a real phone against the real scene rather than by argument.
+///
+/// So: `?w=450` on the deployed site, and hand back whichever value wins.
+double get kDisplayWeight => qDouble('w', 400);
 
 /// Text styles, resolved against the current viewport width.
 ///

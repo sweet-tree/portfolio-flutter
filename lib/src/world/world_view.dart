@@ -17,11 +17,25 @@ import 'package:portfolio/src/chrome/nav.dart';
 import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
+import 'package:portfolio/src/query_params.dart';
 import 'package:portfolio/src/world/hero_panel.dart';
 import 'package:portfolio/src/world/locations.dart';
 import 'package:portfolio/src/world/type_glow.dart';
 import 'package:portfolio/src/world/world_camera.dart';
 import 'package:portfolio/src/world/world_scene.dart';
+
+/// `?bare=1` — the scene and nothing else: no panels, no nav, no statement.
+///
+/// It exists for DESIGN WORK. The layout is designed in Figma on top of a still
+/// of this scene, and that still has to be free of type — otherwise the old
+/// statement ghosts behind whatever is being drawn over it, and every judgement
+/// about where a line can go is made against a picture of the answer we already
+/// have.
+///
+/// It also has to be a real render rather than a flat dark rectangle: the
+/// statement's legibility depends on where the bright energy actually falls,
+/// so type positioned against grey would be positioned against a fiction.
+bool get bareScene => qFlag('bare');
 
 class WorldView extends StatefulWidget {
   const WorldView({super.key});
@@ -126,26 +140,30 @@ class _WorldViewState extends State<WorldView>
           builder: (context, _) => Stack(
             children: [
               Positioned.fill(child: WorldScene(camera: _camera)),
-              for (var i = 0; i < kLocations.length; i++)
-                Positioned(
-                  left: (i - _camera.position) * width,
-                  top: 0,
-                  width: width,
-                  height: constraints.maxHeight,
-                  // Only the hero is composed by hand so far. The others keep
-                  // the plain panel until their turn comes.
-                  child: i == 0
-                      ? HeroPanel(location: kLocations[i], camera: _camera)
-                      : _LocationPanel(location: kLocations[i]),
-                ),
-              // The light the statement throws off when the energy reaches it.
-              //
-              // ABOVE the panels, so it adds to the letters rather than being
-              // hidden behind them, and below the nav, which is chrome and
-              // should not glow. It only ever adds light — the type underneath
-              // is untouched and stays crisp.
-              TypeGlow(camera: _camera.position),
-              WorldNav(camera: _camera),
+              // Everything except the scene comes off for ?bare=1.
+              if (!bareScene) ...[
+                for (var i = 0; i < kLocations.length; i++)
+                  Positioned(
+                    left: (i - _camera.position) * width,
+                    top: 0,
+                    width: width,
+                    height: constraints.maxHeight,
+                    // Only the hero is composed by hand so far. The others keep
+                    // the plain panel until their turn comes.
+                    child: i == 0
+                        ? HeroPanel(location: kLocations[i], camera: _camera)
+                        : _LocationPanel(location: kLocations[i]),
+                  ),
+                // The light the statement throws off when the energy reaches
+                // it.
+                //
+                // ABOVE the panels, so it adds to the letters rather than being
+                // hidden behind them, and below the nav, which is chrome and
+                // should not glow. It only ever adds light — the type
+                // underneath is untouched and stays crisp.
+                TypeGlow(camera: _camera.position),
+                WorldNav(camera: _camera),
+              ],
             ],
           ),
         );

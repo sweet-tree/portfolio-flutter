@@ -141,38 +141,24 @@ class _HeroPanelState extends State<HeroPanel> {
 /// reads as one block.
 const double kLeading = 0.92;
 
-/// How far the width axis may be pushed when setting the block.
+/// ⚠️ THERE IS NO WIDTH AXIS ANY MORE, AND THAT IS A DELIBERATE TRADE.
 ///
-/// ⚠️ ONE WIDTH FOR THE WHOLE BLOCK — the axis is NOT a justification engine.
+/// Archivo carried a `wdth` axis and the fitting used it. Cinzel has weight
+/// only — it was chosen for its voice, not its axes, and this is the bill.
 ///
-/// It used to fit every line to the measure separately, which flushed both
-/// edges and was wrong. At one size, an 18-character line and a 13-character
-/// one need proportions 25% apart to fill the same column, so "Production
-/// Systems" set at the narrow end while "from raw data" set at the wide end.
-/// Same face, same size, same weight — and the block read as two typefaces,
-/// the condensed line looking smaller and lighter than the extended ones. That
-/// is the digital version of horizontally scaling type to fit; a real axis
-/// keeps the strokes from breaking, but the proportions still change and the
-/// eye still catches it.
+/// Worth recording why the axis mattered, in case a future face brings one
+/// back: it is the difference between fitting a line by changing the SIZE and
+/// fitting it by changing the letterforms' PROPORTIONS. What it must never be
+/// used for is justifying each line separately — at one size, an 18-character
+/// line and a 13-character one need proportions 25% apart to fill the same
+/// column, and a block whose lines have different proportions reads as two
+/// typefaces. That fault is what made "Production Systems" look small next to
+/// "from raw data" on a phone.
 ///
-/// Optical consistency inside one statement is not negotiable, so the axis
-/// picks ONE proportion for the setting: the value at which the LONGEST line
-/// fills the measure. Every other line falls where the copy puts it. The rag
-/// that leaves is honest, and a rag reads as a decision where a stretched
-/// letterform reads as a mistake.
-///
-/// The range is deliberately narrow. Archivo goes to 62 and 125, and the file
-/// is trimmed to 75-112, but past roughly ten percent either way the
-/// letterforms stop reading as set and start reading as stretched.
-const double kWidthMin = 88;
-const double kWidthMax = 110;
-
-/// Archivo's drawn proportion — the width the designer actually drew.
-///
-/// Used whenever the block does not need the axis to fit anything, which is
-/// the flush setting below: there the SIZE does the fitting, so the axis has no
-/// job and the only honest thing for it to do is nothing.
-const double kWidthNormal = 100;
+/// So the axis was already down to one value for the whole block. Losing it
+/// costs only that one value, and size absorbs the work — which on narrow
+/// frames means smaller type. Measured: about 13% smaller on a phone.
+const double kDisplayWidth = 100;
 
 /// A size to measure at. Nothing is set at it; width is linear in size for a
 /// fixed axis value, so one measurement at any size gives every other by ratio.
@@ -189,11 +175,12 @@ const double kProbeSize = 100;
 /// Changing a line's WIDTH changes the proportions of the letters themselves,
 /// and the eye reads two proportions in one sentence as two typefaces; that is
 /// the fault that made "Production Systems" look small next to "from raw data"
-/// on a phone. See [kWidthMin].
+/// on a phone. See [kDisplayWidth] — the current face has no width axis at all,
+/// which makes the rule moot but not wrong.
 ///
-/// So the width is chosen once for the block and every line is set with it. The
-/// size is then allowed to vary — but only where varying it says something true
-/// about the sentence, which is what the two settings below decide between.
+/// So the size is the only thing allowed to vary between lines — and only where
+/// varying it says something true about the sentence, which is what the two
+/// settings below decide between.
 ///
 /// ⚠️ WHICH SETTING IS USED IS DECIDED BY THE COPY, NOT BY THE VIEWPORT.
 ///
@@ -242,17 +229,16 @@ class _Name extends StatelessWidget {
   /// Archivo's spacing at this weight is display spacing already; fitting is
   /// done with the width axis instead, which changes the letterforms rather
   /// than the gaps between them.
-  TextStyle _line(
-    TextStyle base,
-    double size,
-    double width, [
-    double? height,
-  ]) => base.copyWith(
+  TextStyle _line(TextStyle base, double size, [double? height]) =>
+      base.copyWith(
         fontSize: size,
         height: height,
+        // The width axis is still asked for. Cinzel does not have one, so it is
+        // ignored — but a face that does gets its drawn proportion rather than
+        // whatever the default happens to be, and the line costs nothing.
         fontVariations: [
-          const FontVariation('wght', kDisplayWeight),
-          FontVariation('wdth', width),
+          FontVariation('wght', kDisplayWeight),
+          const FontVariation('wdth', kDisplayWidth),
         ],
       );
 
@@ -273,34 +259,6 @@ class _Name extends StatelessWidget {
     final width = painter.width;
     painter.dispose();
     return width;
-  }
-
-  /// The width-axis value at which [text] fills [measure] at [size].
-  ///
-  /// Searched rather than calculated: width does not scale linearly with the
-  /// axis — the designer drew intermediate masters, which is the entire point
-  /// of a variable font — so the only honest way to hit the measure is to ask
-  /// the font.
-  double _fitWidth(
-    String text,
-    TextStyle base,
-    double size,
-    double measure,
-    TextScaler scaler,
-  ) {
-    var lo = kWidthMin;
-    var hi = kWidthMax;
-    if (_widthOf(text, _line(base, size, hi), scaler) <= measure) return hi;
-    if (_widthOf(text, _line(base, size, lo), scaler) >= measure) return lo;
-    for (var i = 0; i < 12; i++) {
-      final mid = (lo + hi) / 2;
-      if (_widthOf(text, _line(base, size, mid), scaler) <= measure) {
-        lo = mid;
-      } else {
-        hi = mid;
-      }
-    }
-    return lo;
   }
 
   @override
@@ -352,7 +310,7 @@ class _Name extends StatelessWidget {
       //
       // Width is linear in size for a fixed axis value, so these ratios are all
       // the fitting below needs; nothing has to be re-measured per candidate.
-      final probe = _line(base, kProbeSize, kWidthNormal);
+      final probe = _line(base, kProbeSize);
       final natural = [
         for (final line in lines) math.max(_widthOf(line, probe, scaler), 1),
       ];
@@ -367,16 +325,9 @@ class _Name extends StatelessWidget {
       }
 
       final List<double> sizes;
-      final double width;
 
       if (flush) {
-        // ── FLUSH: the SIZE fits, so the axis does nothing ──────────────────
-        //
-        // Each line is scaled until it spans the column exactly. The width sits
-        // at the proportion the typeface was drawn at, because there is nothing
-        // left for it to fit and any other value would be distortion for its
-        // own sake.
-        width = kWidthNormal;
+        // ── FLUSH: each line scaled until it spans the column ───────────────
         final wanted = [
           for (final w in natural) kProbeSize * measure / w,
         ];
@@ -388,11 +339,7 @@ class _Name extends StatelessWidget {
         // block silently gains a line. Cheap to just ask.
         for (var i = 0; i < wanted.length; i++) {
           for (var pass = 0; pass < 2; pass++) {
-            final actual = _widthOf(
-              lines[i],
-              _line(base, wanted[i], kWidthNormal),
-              scaler,
-            );
+            final actual = _widthOf(lines[i], _line(base, wanted[i]), scaler);
             if (actual > measure) wanted[i] *= measure / actual;
           }
         }
@@ -404,29 +351,25 @@ class _Name extends StatelessWidget {
         final fit = tall > room ? room / tall : 1.0;
         sizes = [for (final s in wanted) s * fit];
       } else {
-        // ── RAGGED: ONE size, and the axis fits the longest line ────────────
+        // ── RAGGED: ONE size for the block, set by the longest line ─────────
         //
         // The longest line is the only one that can collide with the column, so
-        // it sets both. The others are set with the same two values and end
-        // where the copy ends them.
-        var one = allowance / (slots * kLeading);
-        final longest = lines[
-          natural.indexOf(natural.reduce(math.max))
-        ];
+        // it sets the size for everything; the others end where the copy ends
+        // them. Two constraints, and whichever binds first wins: the height the
+        // block is allowed, and the column the longest line has to fit.
+        final widest = natural.indexOf(natural.reduce(math.max));
+        final longest = lines[widest];
+        final byHeight = allowance / (slots * kLeading);
+        final byMeasure = kProbeSize * measure / natural[widest];
+        var one = math.min(byHeight, byMeasure);
 
-        // Reduced if that line cannot be squeezed into the column even at the
-        // narrowest the axis is allowed to go. Three passes: width is close
-        // enough to linear in size for the first correction to land, and the
-        // rest converge.
-        for (var pass = 0; pass < 3; pass++) {
-          final atNarrowest = _widthOf(
-            longest,
-            _line(base, one, kWidthMin),
-            scaler,
-          );
-          if (atNarrowest > measure) one *= math.min(1, measure / atNarrowest);
+        // Then verified by measurement, for the same reason as the flush path:
+        // width is not exactly linear in size, and a line a fraction over the
+        // column does not overhang — it wraps, and the block gains a line.
+        for (var pass = 0; pass < 2; pass++) {
+          final actual = _widthOf(longest, _line(base, one), scaler);
+          if (actual > measure) one *= measure / actual;
         }
-        width = _fitWidth(longest, base, one, measure, scaler);
         sizes = [for (var i = 0; i < lines.length; i++) one];
       }
 
@@ -447,7 +390,6 @@ class _Name extends StatelessWidget {
               style: _line(
                 base,
                 sizes[i],
-                width,
                 kLeading,
               ).copyWith(color: colour),
             ),
@@ -476,7 +418,7 @@ class _Name extends StatelessWidget {
               signature: Object.hash(
                 Object.hashAll(lines),
                 Object.hashAll(sizes),
-                width,
+                kDisplayWeight,
                 measure,
               ),
               maxWidth: measure,

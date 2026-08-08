@@ -35,12 +35,19 @@ flutter:
   # Bundled rather than fetched: a runtime font request is a second origin on
   # the critical path, and cross-origin isolation would block it anyway.
   #
-  # ARCHIVO is the display face. A UI text face like Roboto is drawn to hold
-  # up at 14px; at 150px its shapes are generic and its spacing collapses the
-  # moment any tracking is applied — which is exactly the "Sy" collision that
-  # sent us looking. Archivo carries a WIDTH axis as well as weight, so a line
-  # can be fitted to the measure by adjusting its width instead of its size,
-  # which is how flush setting is actually done.
+  # CINZEL is the display face, and it was chosen for the STORY rather than for
+  # its metrics. The site is an ancient object in a future room; Cinzel is
+  # drawn from Roman inscriptional capitals, so the statement reads as carved
+  # rather than typed. It replaced Archivo, which was the better-engineered
+  # face and the wrong voice.
+  #
+  # ⚠️ TWO THINGS IT COSTS, both known and accepted:
+  #   · NO WIDTH AXIS — weight only, 400-900. Archivo's `wdth` was what the
+  #     compact layout used to fit lines, so size now absorbs all of it and the
+  #     type is smaller on narrow frames. See hero_panel.dart.
+  #   · ITS LOWERCASE IS SMALL CAPITALS, not a true lowercase. That is the
+  #     design, not a defect — but it means most glyphs sit at about 70% of cap
+  #     height, so the statement reads smaller than its size suggests.
   #
   # INTER is the UI face, chosen for the OPTICAL SIZE axis: the typeface itself
   # tightens spacing and refines detail as the size grows, instead of a
@@ -48,13 +55,13 @@ flutter:
   #
   # ⚠️ SUBSET AND AXIS-TRIMMED, and it has to stay that way. Raw they are
   # 1.5MB; cut to Latin plus the two marks this site actually uses (· and →)
-  # and with the unused ends of the axes removed, they are 168KB gzipped
+  # and with the unused ends of the axes removed, they are 119KB gzipped
   # together. Replacing either file with a full download would quietly put a
   # megabyte back on first paint.
   fonts:
-    - family: Archivo
+    - family: Cinzel
       fonts:
-        - asset: fonts/Archivo-display.ttf
+        - asset: fonts/Cinzel-display.ttf
     - family: Inter
       fonts:
         - asset: fonts/Inter-ui.ttf
