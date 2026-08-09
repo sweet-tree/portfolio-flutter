@@ -1205,7 +1205,28 @@ struct CubeSurface {
   vec3 f0;            // reflectance head-on
 };
 
-CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
+/// Squashes a sample position along one direction, so a field sampled with it
+/// has features that many times LONGER that way.
+///
+/// ⚠️ THIS IS THE CHEAP HALF OF ANISOTROPIC FILTERING, AND FOR NOISE IT IS THE
+/// WHOLE THING. Taking several taps along the smear is the honest method for a
+/// picture, but noise has no picture to be faithful to — only a bandwidth. So
+/// instead of sampling a too-fine field many times, make the field coarser in
+/// the direction that cannot be resolved, once. The map is linear, so a
+/// gradient taken through it stays exact.
+///
+/// The arithmetic works out to features keeping their SIZE ON SCREEN: a face
+/// tilted to `1/aniso` shrinks everything on it by that much, and this grows it
+/// back by the same factor along the same axis. Nothing ends up smaller than a
+/// pixel, which is the entire goal.
+vec3 squashAlong(vec3 v, vec3 dir, float k) {
+  return v - dir * dot(v, dir) * k;
+}
+
+/// [stretch] is the direction a pixel smears in, on the surface, and [aniso] is
+/// how far. See cubeSurfaceFiltered.
+CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
+                        vec3 stretch, float aniso) {
   // ⚠️ THE PLAIN CUBE, for comparison — `?mat=0`. See uMaterial.
   //
   // These are the exact three values the object carried before it had a
@@ -1240,6 +1261,19 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // the next, the way growth on a real rock does. Texturing face by face has to
   // fight that and always shows a join along the edges.
   vec3 q = rotY(-spin) * (p - kCubeOrigin);
+
+  // ⚠️ THE MASONRY IS SAMPLED WITH `q`, EVERYTHING FINE WITH `qf`.
+  //
+  // The blocks are large — several pixels across at any size we draw — so they
+  // do not alias and need no help. They must also NOT be squashed: a wall's
+  // stones are supposed to foreshorten when you look along the wall, and
+  // undoing that would read as the masonry sliding off the surface. What
+  // aliases is the fine work — the moss shoots, the crust's cracks, the stone's
+  // grain, the fruiting dots. Those have no shape anyone can name, so making
+  // them coarser along the unresolvable axis costs nothing anyone can see.
+  vec3 sdir = rotY(-spin) * stretch;
+  float squash = 1.0 - 1.0 / max(aniso, 1.0);
+  vec3 qf = squashAlong(q, sdir, squash);
 
   // ── The masonry ──────────────────────────────────────────────────────────
   //
@@ -1307,7 +1341,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
                 0.45 * (6.0 * b2 * (1.0 - b2) / (jw * 9.0));
   vec3 stoneSlope = (-mas.yzw) * dFace * kStoneAspect * kStoneScale * kJointDepth;
 
-  float h = mossHeight(q, lod);
+  float h = mossHeight(qf, lod);
 
   // The growth's SLOPE, from the field itself rather than from the screen.
   // Stepping by the pixel footprint (never smaller) means the slope is measured
@@ -1315,9 +1349,9 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // smaller instead of turning into per-pixel noise.
   float e = max(lod, 0.004);
   vec3 grad = vec3(
-    mossHeight(q + vec3(e, 0.0, 0.0), lod),
-    mossHeight(q + vec3(0.0, e, 0.0), lod),
-    mossHeight(q + vec3(0.0, 0.0, e), lod)
+    mossHeight(qf + squashAlong(vec3(e, 0.0, 0.0), sdir, squash), lod),
+    mossHeight(qf + squashAlong(vec3(0.0, e, 0.0), sdir, squash), lod),
+    mossHeight(qf + squashAlong(vec3(0.0, 0.0, e), sdir, squash), lod)
   ) - h;
 
   // ⚠️ WHERE MOSS GROWS: where water sits. Upward faces are lusher than
@@ -1358,7 +1392,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // field JUST BEFORE the threshold fringes the outline without disturbing the
   // relief — the slope below still comes from the unfringed field, because this
   // is about where the moss stops, not about its shape.
-  float fringe = fbm3Band(q * 34.0 + 77.3, lod * 34.0);
+  float fringe = fbm3Band(qf * 34.0 + 77.3, lod * 34.0);
   float hf = h + (fringe - 0.5) * 0.055;
 
   // ⚠️ GRAVITY. THE ONE THING NO AMOUNT OF EXTRA NOISE CAN IMITATE.
@@ -1403,8 +1437,8 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // Both stretched across the field's real range rather than used raw: a
   // normalised band sits within about a tenth of 0.5, so feeding it straight
   // into a mix only ever reaches the middle of the two colours.
-  float grain = smoothstep(0.40, 0.60, fbm3Band(q * 9.0 + 71.3, lod * 9.0));
-  float creased = 1.0 - abs(2.0 * fbm3Band(q * 3.3 + 5.9, lod * 3.3) - 1.0);
+  float grain = smoothstep(0.40, 0.60, fbm3Band(qf * 9.0 + 71.3, lod * 9.0));
+  float creased = 1.0 - abs(2.0 * fbm3Band(qf * 3.3 + 5.9, lod * 3.3) - 1.0);
   float ridge = smoothstep(0.55, 1.0, creased);
   vec3 stone = mix(vec3(0.093, 0.089, 0.082), vec3(0.148, 0.142, 0.130), grain);
   stone *= mix(0.86, 1.08, ridge);
@@ -1448,7 +1482,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // Patch-to-patch variation, on a scale much larger than a clump: some of it
   // is drier and browner than the rest. Without this every patch is the same
   // plant, which is the other half of why one-scale noise reads as camouflage.
-  float age = fbm3Band(q * 0.8 + 55.1, lod * 0.8);
+  float age = fbm3Band(qf * 0.8 + 55.1, lod * 0.8);
   mossC = mix(mossC, mossC * vec3(1.11, 1.00, 0.84), smoothstep(0.50, 0.64, age));
 
   // ── The lichen ───────────────────────────────────────────────────────────
@@ -1459,7 +1493,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   const float kLichenScale = 11.0;
   float bloom;
   float patchId;
-  float crust = lichen(q * kLichenScale, lod * kLichenScale, bloom, patchId);
+  float crust = lichen(qf * kLichenScale, lod * kLichenScale, bloom, patchId);
   crust *= (1.0 - moss) * bevel * uLichen;
 
   // Pale sage, and paler still at the growing edge, which is the newest and
@@ -1495,13 +1529,13 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // falls in is the only one that can hold the disc it is inside, and no
   // neighbours need checking at all.
   const float kFruitScale = 74.0;
-  vec3 fruitCell = floor(q * kFruitScale);
+  vec3 fruitCell = floor(qf * kFruitScale);
   vec3 fruitAt = hash33(fruitCell + 71.1) * 0.6 + 0.2;
   float fruitR = 0.10 + 0.11 * hash31(fruitCell + 13.7);
   float fruitW = max(0.03, lod * kFruitScale);
   float fruit = step(0.70, hash31(fruitCell + 91.3)) *
                 (1.0 - smoothstep(fruitR - fruitW, fruitR,
-                                  length(fract(q * kFruitScale) - fruitAt)));
+                                  length(fract(qf * kFruitScale) - fruitAt)));
   crustC *= mix(1.0, 0.34, fruit);
 
   // ⚠️ A CRUST IS CRACKED INTO PLATES. As it dries and swells it splits into
@@ -1514,7 +1548,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   const float kAreoleScale = 32.0;
   float areoleId;
   vec3 areoleCell;
-  vec4 areole = masonry(q * kAreoleScale, areoleId, areoleCell);
+  vec4 areole = masonry(qf * kAreoleScale, areoleId, areoleCell);
   float fissureW = max(0.10, lod * kAreoleScale * 1.6);
   float plate = smoothstep(0.0, fissureW, areole.x);
   crustC *= mix(0.62, 1.06, plate) * mix(0.90, 1.10, areoleId);
@@ -1577,6 +1611,55 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   return s;
 }
 
+/// The surface, filtered for the shape a pixel ACTUALLY covers.
+///
+/// ⚠️ A PIXEL IS NOT A CIRCLE ON A TILTED FACE, IT IS A LONG THIN SMEAR.
+///
+/// `lod` describes the footprint on a face viewed square on. Tilt the face away
+/// and the same pixel stretches across the surface by 1/cos of the angle, along
+/// one direction only. That is not a small correction here: the cube's top face
+/// sits at 0.22 from this camera, so a pixel there covers four and a half times
+/// more surface one way than the other — and it worsens as the object grows,
+/// because raising the cube lifts its top toward the camera's eye level. At a
+/// half-size of 0.8 the top is down to 0.09, over ten times.
+///
+/// Detail finer than that smear survives the fade, cannot be drawn, and
+/// aliases. The fizzing is what reads as "pixelated".
+///
+/// ⚠️ TWO WRONG ANSWERS WERE TRIED FIRST, AND BOTH ARE INSTRUCTIVE.
+///
+/// Blurring by the whole smear is the safe direction and throws away the SHARP
+/// axis along with the soft one — the entire cube went to mush.
+///
+/// Sampling several times along the smear is what hardware does for a texture,
+/// and it works, but it costs a full material evaluation per tap: up to four
+/// per face, three faces, where there had been one. Far too expensive for what
+/// it buys.
+///
+/// ⚠️ THE THIRD ANSWER IS THE RIGHT ONE, AND IT IS FREE: a texture has a
+/// picture to stay faithful to, and NOISE DOES NOT — it only has a bandwidth.
+/// So rather than sampling a too-fine field repeatedly, make the field coarser
+/// in the direction that cannot be resolved, once. This function works out how
+/// much and which way; cubeSurface applies it to the fine fields and leaves the
+/// masonry alone.
+CubeSurface cubeSurfaceFiltered(vec3 p, vec3 n, vec3 v, float spin, float lod) {
+  float nDotVg = max(dot(n, v), 1e-4);
+  // Capped at eight, the usual ceiling, so a face at the silhouette cannot ask
+  // for an unbounded smear.
+  float aniso = clamp(1.0 / nDotVg, 1.0, 8.0);
+
+  // The direction the pixel smears in: the view, laid flat onto the face.
+  vec3 vt = v - n * dot(n, v);
+  float vtl = length(vt);
+
+  // Barely tilted, or looking straight down the normal — nothing to correct,
+  // and no direction to correct along.
+  if (aniso < 1.15 || vtl < 1e-4) {
+    return cubeSurface(p, n, spin, lod, vec3(0.0, 1.0, 0.0), 1.0);
+  }
+  return cubeSurface(p, n, spin, lod, vt / vtl, aniso);
+}
+
 // ── Shading ─────────────────────────────────────────────────────────────────
 
 /// Intersects and shades the cube along one camera ray. Returns its colour
@@ -1584,7 +1667,13 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
 vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit);
 
 vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) {
-  CubeSurface s = cubeSurface(p, n, spin, lod);
+  // ⚠️ THE GEOMETRIC NORMAL, NOT THE BUMPED ONE, wherever the question is about
+  // the SHAPE rather than the surface — how edge-on this face is to the camera.
+  // Feeding those terms the bumpy normal turns detail finer than a pixel into
+  // blotchy brightness, a well-known way to make a textured surface sparkle.
+  float nDotVg = max(dot(n, v), 1e-4);
+
+  CubeSurface s = cubeSurfaceFiltered(p, n, v, spin, lod);
   vec3 ns = s.normal;
   vec3 albedo = s.albedo;
   float roughness = s.roughness;
@@ -1595,12 +1684,6 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) 
   vec3 h = normalize(l + v);
   float nDotL = max(dot(ns, l), 0.0);
   float nDotV = max(dot(ns, v), 1e-4);
-  // ⚠️ THE GEOMETRIC NORMAL, NOT THE BUMPED ONE, wherever the question is about
-  // the SHAPE rather than the surface — how edge-on this face is to the camera.
-  // Feeding those terms the bumpy normal turns detail finer than a pixel into
-  // blotchy brightness, which is a well-known way to make a textured surface
-  // sparkle as it moves.
-  float nDotVg = max(dot(n, v), 1e-4);
 
   float d = DistributionGGX(ns, h, roughness);
   float vis = VisibilitySmith(nDotV, nDotL, roughness);
