@@ -141,6 +141,10 @@ uniform float uGlyph;
 /// `?emit=`.
 uniform float uEmit;
 
+/// How full of glass the carved channel is. 1 pours it level with the stone;
+/// below that it sits lower and the stone lips over it. `?inlay=`.
+uniform float uInlay;
+
 uniform sampler2D uCubeLayer;
 
 /// The cast shadow and the contact darkening, baked over the table's surface.
@@ -791,33 +795,33 @@ float carvingIrradiance(vec3 p, vec3 n) {
   return clamp(cosN / (dist2 + uCubeHalf * uCubeHalf * 2.0), 0.0, 1.0);
 }
 
-/// How much energy is arriving at this point of the cube's surface, right now.
+/// The energy inside the cube, as a raw field — the same one that flows across
+/// the glass, sampled in three dimensions instead of two.
 ///
-/// ⚠️ THIS IS THE SAME SUBSTANCE AS THE FLOW ON THE GLASS, not a separate effect
-/// tuned to resemble it. He looked at the first version — an even wash filling
-/// the letters — and said immediately that it was not the same energy. He was
-/// right, and the mismatch was not the colour, which was already identical: it
-/// was that one of them is a moving, turbulent cloud and the other was a flat
-/// fill. A flat area of colour and a churning one never read as one material
-/// however well the hue matches.
+/// ⚠️ IT IS RETURNED RAW, AND THAT IS THE POINT. The caller applies exactly the
+/// same threshold the sheet's flow uses, so the two are not merely similar
+/// colours: they are one field, shaped by one curve, differing only in where
+/// they are read. He looked at the first version and said it was not the same
+/// energy — the fault was never the colour, which was already identical from the
+/// same constant. It was that one was a moving cloud and the other a flat fill.
 ///
-/// So this is the surface flow's own model, one dimension up. Same noise, same
-/// cycle length, same period, same flow-map advection — two copies half a cycle
-/// out of phase, cross-faded on a triangle weight so that no sample ever
-/// accumulates stretch. The energy wells up from the middle of the cube, travels
-/// OUTWARD along its own radius, escapes wherever the carving has thinned the
-/// stone, and then keeps going across the sheet. One story, told by one field.
+/// Same noise, same cycle length, same period, same flow-map advection: two
+/// copies half a cycle out of phase, cross-faded on a triangle weight so no
+/// sample ever accumulates stretch. The energy wells up inside the cube, travels
+/// OUTWARD along its own radius, runs along the glass channels cut into its
+/// faces, and pours out onto the sheet below. One story, one field.
 ///
 /// ⚠️ SAMPLED IN THE CUBE'S OWN FRAME, so the turbulence belongs to the object.
 /// In world space it would swim across the faces the moment the cube moved.
 ///
-/// ⚠️ AND IT NEVER REACHES ZERO. The flow on the glass is free to thin out to
-/// nothing, because nothing is written in it. These letters are, and a letter
-/// that blinks out is a letter nobody can read — so the modulation breathes
-/// between a floor and full rather than between off and on. That floor is the
-/// one place this deliberately departs from the field it comes from, and it is a
-/// legibility decision rather than a physical one.
-float cubeEnergyFlow(vec3 p) {
+/// ⚠️ AND IT IS ALLOWED TO REACH NOTHING, which the earlier version was not. I
+/// held it above a floor because I was afraid a letter would blink out and stop
+/// being readable. That fear was wrong, and the crop he sent is what showed it:
+/// the channel is real cut geometry, so the letters are perfectly legible with
+/// no light in them at all — they simply become dark glass for a moment. Which
+/// means the energy in them can be exactly as sparse and dramatic as the fog on
+/// the sheet, because losing the light never loses the letterform.
+float carveFogField(vec3 p) {
   vec3 lp = spinInto() * (p - cubeOrigin()) / max(uCubeHalf, 1e-4);
   vec3 dir = normalize(lp + vec3(1e-5));
 
@@ -848,11 +852,38 @@ float cubeEnergyFlow(vec3 p) {
   float b = fbm3Coarse(lp * kScale - dir * (pb * kCycleDistance) + wander);
   float f = mix(a, b, abs(1.0 - 2.0 * pa));
 
-  // fbm3Coarse runs 0 to 0.875 and sits around 0.44, so this window is roughly
-  // centred on the field rather than perched at one end of it — the mistake
-  // that made the first moss coverage a tenth of what it should have been.
-  return mix(0.34, 1.0, smoothstep(0.30, 0.66, f));
+  // Raw. The caller thresholds it with the sheet's own curve — see kFogLow and
+  // kFogHigh — so the two fields are shaped identically rather than similarly.
+  return f;
 }
+
+/// The window the energy is read through, wherever it is read.
+///
+/// ⚠️ THE SAME TWO NUMBERS AS THE FLOW ON THE SHEET, and they belong beside the
+/// colour constant for the same reason: what makes two things one substance is
+/// not the hue, it is the whole chain from field to pixel. A lower threshold
+/// turns more of the noise into visible energy, so the cloud is broader rather
+/// than only its brightest peaks showing.
+///
+/// ⚠️ AND fbm3Coarse IS NOT fbm — it runs 0 to 0.875 against the 2D field's
+/// 0.97, and sits around 0.44 against 0.48. So the window is shifted by that
+/// ratio rather than copied as literals. Copying thresholds between fields with
+/// different statistics is the single most expensive mistake made on this
+/// object; the moss's first coverage was a tenth of what it should have been for
+/// exactly that reason.
+const float kFogLow = 0.25;
+const float kFogHigh = 0.79;
+
+/// The longest path light can take through the channel, for packing it into
+/// eight bits. Refraction bends a ray at most 42 degrees on the way into glass
+/// this dense, so it can never travel more than about a third further than the
+/// channel is deep.
+const float kCarvePathMax = 0.25;
+
+/// Turns a path length through the glass into how much fog is seen along it, and
+/// how brightly a cut edge burns.
+const float kFogGain = 15.0;
+const float kEdgeGain = 1.30;
 
 /// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
 ///
@@ -1672,6 +1703,29 @@ float cubeLod() {
   return (length(cubeOrigin() - kEye) / kFocal) / uCubeUnit;
 }
 
+/// What the light does inside the carved channel.
+///
+/// ⚠️ THE CHANNEL IS FULL OF GLASS, and that is the whole design rather than a
+/// detail of it. The energy does not come off a glowing surface — it is fog
+/// INSIDE a material, seen through it, exactly as it is on the sheet the cube
+/// stands on. One rule for the scene: glass is where the energy lives. The
+/// letters are glass channels; the table is a glass sheet; the same fog is in
+/// both, read through the same curve, tinted by the same constant.
+///
+/// That is why the previous attempt could never be tuned into this. A glowing
+/// surface has one colour, no thickness and no inside. Fog under glass is
+/// something you look INTO — it thickens where there is more of it to look
+/// through, it goes reflective at a glancing angle, and it lights its own cut
+/// edges. None of those can be added to a glowing surface; they come from being
+/// a volume.
+struct CarveGlass {
+  float amount;   // how much of this pixel is the inlay's surface
+  float path;     // how far light travels through the glass, in world units
+  float trans;    // what fraction gets in rather than reflecting off
+  float edge;     // the lit rim where the glass is cut against stone
+  float lip;      // stone standing above the glass, when it is not poured full
+};
+
 /// Everything the lighting needs to know about the surface at one point.
 struct CubeSurface {
   vec3 albedo;
@@ -1681,7 +1735,7 @@ struct CubeSurface {
   float through;      // how much light passes THROUGH rather than off
   float fuzz;         // how much of this is a thicket rather than a solid
   vec3 f0;            // reflectance head-on
-  vec3 emission;      // light this surface MAKES — see the carving
+  CarveGlass glass;   // the inlay, if this point is on one
 };
 
 /// Squashes a sample position along one direction, so a field sampled with it
@@ -1727,10 +1781,16 @@ vec3 squashAlong(vec3 v, vec3 dir, float k) {
 /// How deep the cut is, as a fraction of the cube's half-width.
 ///
 /// ⚠️ RELATIVE, NOT ABSOLUTE, so a bigger stone carries a proportionally deeper
-/// cut — the same object, larger. It works out around five times a masonry
-/// joint, which is the right order: a joint is a hairline between blocks, a
-/// carving is meant to be read from across a room.
-const float kCarveDepth = 0.030;
+/// cut — the same object, larger.
+///
+/// ⚠️ AND DEEP ON PURPOSE, more than twice what it was. Depth is no longer only
+/// a shape: the channel is full of glass, so depth is HOW MUCH FOG THERE IS TO
+/// LOOK THROUGH. A shallow channel is a thin, weak letter however bright it is
+/// made; a deep one has body, and thins naturally toward its own edges where
+/// there is less glass in the way. That falloff is the thing that makes it read
+/// as a volume rather than a filled outline, and it cannot be faked by a
+/// gradient.
+const float kCarveDepth = 0.075;
 
 /// The two coordinates of a face, given a position and normal in the cube's own
 /// frame. Normalised so the face runs -1 to 1 whatever size the cube is.
@@ -1846,7 +1906,87 @@ float carveDepthAt(vec3 lp, vec3 nl, float lod) {
 
 /// [stretch] is the direction a pixel smears in, on the surface, and [aniso] is
 /// how far. See cubeSurfaceFiltered.
-CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
+/// Traces the light's path through the glass filling the channel.
+///
+/// ⚠️ SOLVED, NOT MARCHED. The wall ramp is now a hairline, so the channel is to
+/// all intents a flat-bottomed slot with vertical sides — and for that shape the
+/// path through the glass has a closed form. The ray either reaches the floor or
+/// leaves through a side wall, whichever comes first, and both distances are one
+/// division. That is exact where sixteen marching steps were an estimate, and it
+/// costs a fraction as much.
+///
+/// ⚠️ AND THE SIDE-WALL CASE IS WHAT GIVES THE LETTERS THEIR BODY. Near the edge
+/// of a stroke there is barely any glass between the surface and the stone, so
+/// the fog thins out; through the middle of a stroke there is the full depth of
+/// it. That falloff is a real consequence of the shape rather than a gradient
+/// anyone chose, and it is most of what separates a volume from a filled
+/// outline.
+CarveGlass carveGlass(vec3 p, vec3 n, vec3 v, float lod) {
+  CarveGlass g;
+  g.amount = 0.0;
+  g.path = 0.0;
+  g.trans = 0.0;
+  g.edge = 0.0;
+  g.lip = 0.0;
+
+  vec3 nl = spinInto() * n;
+  if (abs(nl.y) > 0.5 || uCarve < 1e-4) return g;
+
+  float full = kCarveDepth * uCubeHalf * uCarve;
+  // How deep the glass surface sits below the stone's. Poured level, the way an
+  // inlay actually is, rather than following the floor.
+  float air = full * (1.0 - uInlay);
+
+  float nDotV = max(dot(n, v), 1e-3);
+
+  // Where the view ray meets the glass, which is not where it met the face
+  // unless the channel is poured full. That difference IS the parallax of
+  // looking into a recess, and it comes out of the geometry rather than being
+  // added afterwards.
+  vec3 pGlass = p - v * (air / nDotV);
+  vec3 lpGlass = spinInto() * (pGlass - cubeOrigin());
+  float cd = carveDist(lpGlass, nl, lod);
+
+  // One pixel, in the units the distance is measured in. A distance field
+  // antialiases by comparing against exactly this and nothing else.
+  float aa = max(lod / max(uCubeHalf, 1e-4), 1e-5);
+  g.amount = clamp(-cd / aa, 0.0, 1.0);
+
+  // ⚠️ THE CUT EDGE, AND IT IS THE DETAIL THAT SAYS "INLAID". The brightest part
+  // of the table is its far cut edge, because light travelling inside a sheet by
+  // total internal reflection escapes wherever the sheet is cut. These letters
+  // are cut glass around their entire outline, so they get the same rim — and it
+  // reaches slightly OUTWARD onto the stone as well, which is what stops the
+  // glow ending in a hard line and reads as light rather than as fill.
+  const float kEdge = 0.010;
+  g.edge = exp(-abs(cd) / kEdge);
+
+  if (g.amount <= 0.0) return g;
+
+  // Fresnel at the pour's flat surface: what gets in rather than bouncing off.
+  // Near head-on almost everything enters and you see the fog; at a glancing
+  // angle the glass turns to a mirror and shows the sky instead. That single
+  // behaviour is most of what makes it read as a material rather than a shape.
+  float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
+  float fres = f0 + (1.0 - f0) * pow(1.0 - nDotV, 5.0);
+  g.trans = 1.0 - fres;
+
+  // Bent on the way in, which is why a deep channel does not show its floor
+  // where you would expect it.
+  vec3 r = refract(-v, n, 1.0 / kIor);
+  float down = max(-dot(r, n), 1e-3);
+  float sideways = max(length(r - n * dot(r, n)), 1e-4);
+
+  float toFloor = (full - air) / down;
+  // How far the light can go before it leaves through a wall — the stroke's own
+  // half-width at this point, in world units.
+  float toWall = (-cd * uCubeHalf) / sideways;
+  g.path = max(min(toFloor, toWall), 0.0);
+  g.lip = air > 1e-5 ? 1.0 : 0.0;
+  return g;
+}
+
+CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
                         vec3 stretch, float aniso) {
   // ⚠️ THE PLAIN CUBE, for comparison — `?mat=0`. See uMaterial.
   //
@@ -1869,7 +2009,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
     plain.through = 0.0;
     plain.fuzz = 0.0;
     plain.f0 = vec3(0.10, 0.10, 0.115);
-    plain.emission = vec3(0.0);
+    plain.glass = carveGlass(p, n, v, lod);
     return plain;
   }
 
@@ -1913,28 +2053,30 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   vec3 nl = spinInto() * n;
   float carveD = carveDepthAt(lp, nl, lod);
 
-  // Its slope, by difference along the face's own two axes.
+  // The channel, and what the light does inside it.
+  CarveGlass glass = carveGlass(p, n, v, lod);
+
+  // The slope of the stone where it is NOT glass — the lip standing over a
+  // channel that was not poured full. Measured by difference along the face's
+  // own two axes; stepping by the pixel footprint means it is measured over what
+  // is actually visible, so the cut softens as the cube shrinks instead of
+  // turning into per-pixel noise. Same reasoning as the moss's slope below.
   //
-  // Analytic would be possible — the rounded-rectangle distance has a closed
-  // form gradient — but it is fiddly to get right at the corners, and this
-  // function is cheap and is now paid once rather than every frame. Stepping by
-  // the pixel footprint means the slope is measured over what is actually
-  // visible, so the cut softens as the cube shrinks instead of turning into
-  // per-pixel noise. Same reasoning as the moss's slope below.
+  // ⚠️ AND IT IS SWITCHED OFF WHERE THE GLASS IS. A pour is LEVEL: its surface
+  // is flat and lies in the face's own plane, so tilting the normal there would
+  // be describing a groove that the glass has filled in.
   vec3 la = abs(nl);
   vec3 ct1 = la.x > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
   vec3 ct2 = la.y > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
   vec3 carveSlope = vec3(0.0);
-  float carve = 0.0;
   if (carveD > 0.0 || carveDist(lp, nl, lod) < 0.05) {
     float ce = max(lod, 0.004);
     float cd1 = carveDepthAt(lp + ct1 * ce, nl, lod);
     float cd2 = carveDepthAt(lp + ct2 * ce, nl, lod);
     // Into world space: the cut goes DOWN into the face, so the surface leans
     // the way the depth increases.
-    carveSlope = spinOutOf() * (ct1 * (cd1 - carveD) + ct2 * (cd2 - carveD)) / ce;
-    // How far into the cut this is, 0 to 1 — the handle the material uses.
-    carve = clamp(carveD / max(kCarveDepth * uCubeHalf * uCarve, 1e-6), 0.0, 1.0);
+    carveSlope = spinOutOf() * (ct1 * (cd1 - carveD) + ct2 * (cd2 - carveD)) /
+                 ce * (1.0 - glass.amount);
   }
 
   float mScale = kRefHalf / uCubeHalf;
@@ -2108,21 +2250,16 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   float upward = clamp(n.y, 0.0, 1.0);
   // The runoff carries the growth down with it.
   float t = mix(0.500, 0.440, upward) - inJoint * 0.10 - streak * 0.055;
-  // ⚠️ AND THE CARVING IS A RECESS, SO IT IS TREATED AS ONE — no more, no less.
-  //
-  // This single term is what makes the cut readable, and nothing here draws it.
-  // A groove holds water for the same reason a joint does, so growth gathers in
-  // it, so the pattern appears. It is deeper than a joint, so it gets more: 0.16
-  // against the joint's 0.10.
-  //
-  // ⚠️ WHICH MEANS THE CARVING INHERITS EVERYTHING THE WALL ALREADY DOES, free
-  // and consistent. The line dips where it crosses a joint, because the joint is
-  // already lower. It picks up the runoff streaks. Its growth is the same
-  // organism at the same scale as the growth beside it. None of that is written
-  // anywhere — it falls out of the cut being a real depth rather than a mark.
-  t -= carve * 0.16;
   t -= (uMoss - 1.0) * 0.07;   // ?moss=
   float moss = smoothstep(t, t + 0.06, hf);
+  // ⚠️ NOTHING GROWS ON GLASS, and this one line replaces a whole tuning problem
+  // rather than solving it. The channel used to be made to grow moss on purpose,
+  // because growth was what revealed the pattern while nothing lit it — and then
+  // the light passing through that growth came out green, which is the one thing
+  // the energy must never do. Filling the channel with glass deletes the
+  // question: the letters cannot be green because there is nothing green in
+  // them. Stone lips above the pour keep their growth, which is where it belongs.
+  moss *= 1.0 - glass.amount;
   // How close bare rock is to being overtaken. A clump standing proud throws a
   // little shade onto the stone beside it, and that contact darkening is most
   // of what makes growth sit ON a surface rather than in it.
@@ -2196,7 +2333,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // Crustose lichen wants dry, exposed, open rock — which a cut is the opposite
   // of. Suppressed in the carving for the same reason it is suppressed in the
   // joints, by the same kind of term.
-  crust *= (1.0 - moss) * bevel * uLichen * (1.0 - carve * 0.85);
+  crust *= (1.0 - moss) * bevel * uLichen * (1.0 - glass.amount);
 
   // Pale sage, and paler still at the growing edge, which is the newest and
   // thinnest part of the crust. Some colonies run yellow — a different species
@@ -2286,14 +2423,11 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   s.occlusion = mix(1.0, mix(0.62, 1.0, smoothstep(0.40, 0.56, h)), moss);
   // A joint sees almost nothing of the sky — it is a slot between two stones.
   s.occlusion *= mix(1.0, 0.60, inJoint);
-  // ⚠️ AND THE FLOOR OF A CUT SEES EVEN LESS. This is the term that makes the
-  // carving read in FLAT light, with no lamp on it at all — the same reason
-  // lettering on a gravestone is legible on an overcast day. Without it the cut
-  // only exists when something happens to be grazing across it.
-  s.occlusion *= mix(1.0, 0.52, carve);
-  // Water sits in it, and wet stone is darker — the streaks already prove the
-  // mechanism on the open faces.
-  s.albedo *= mix(1.0, 0.80, carve * (1.0 - moss));
+  // ⚠️ A CHANNEL POURED FULL SEES THE SKY LIKE THE FACE DOES, because its
+  // surface IS the face's plane — so no occlusion is owed there. One left below
+  // the rim is a slot, and gets it. That is why this depends on how full the
+  // pour is rather than on the cut being present.
+  s.occlusion *= mix(1.0, mix(0.55, 1.0, uInlay), glass.amount);
   // Only the thin, newest growth at the tips passes light.
   s.through = moss * smoothstep(0.15, 0.85, tip);
 
@@ -2322,43 +2456,34 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   vec3 areoleSlope = (-areole.yzw) * (6.0 * a1 * (1.0 - a1) / fissureW) *
                      kAreoleScale * 0.0016 * crust;
 
-  // ── The energy, coming OUT of the carving ────────────────────────────────
-  //
-  // ⚠️ THIS IS WHAT THE CARVING IS FOR, and it reverses which way round the two
-  // things stand. The cut is not a groove that happens to be lit; it is the
-  // CHANNEL, and the letters are visible because the cube's energy leaves
-  // through them. That is also the answer to why this object glows at all — a
-  // solid that glows generally is a lamp, a solid that glows along a carved
-  // pattern is an artifact doing something.
-  //
-  // ⚠️ SAME SUBSTANCE AS THE FLOW ON THE GLASS, deliberately the same constant.
-  // The cube is the source and the surface carries it outward, so if these two
-  // were tuned separately they would drift into being two different effects that
-  // merely happen to sit next to each other.
-  // Brightest at the FLOOR of the cut and falling off up its walls, because
-  // that is where the channel is deepest and the least stone is left over it.
-  //
-  // ⚠️ NO LONGER SQUARED. Squaring was my own choice, to keep the walls dark —
-  // and with the wall ramp three times too wide it was doubling the penalty on
-  // exactly the thin strokes that were already losing depth: 68% of the depth
-  // became 46% of the brightness. Now the walls are narrow enough to stay dark
-  // on their own, and the light along a letter follows the cut rather than the
-  // stroke's width.
-  float depthOut = carve;
-
-  // ⚠️ AND IT COMES THROUGH THE MOSS RATHER THAN BEING BLOCKED BY IT. Growth
-  // sitting in the channel is lit from BEHIND — the one lighting condition that
-  // makes a leaf look like a leaf — so the light survives, dimmed, and picks up
-  // the green on its way out. Blocking it instead would make the moss read as
-  // paint over a lamp, and would waste the most interesting thing the two
-  // features do together.
-  vec3 through = mix(vec3(1.0), mossC * 9.0, moss * 0.85);
-  s.emission = kEnergyTint * depthOut * uEmit * 1.6 * through;
-
   vec3 slope = blockTilt + stoneSlope + areoleSlope + carveSlope +
                (grad / e) * mix(0.035, 0.150, moss);
   vec3 alongFace = slope - n * dot(slope, n);
   s.normal = normalize(n - alongFace);
+
+  // ── The glass in the channel ─────────────────────────────────────────────
+  //
+  // ⚠️ THE SURFACE STOPS BEING STONE HERE, and it has to be a real material
+  // swap rather than a tint over the stone. Glass is nearly black in reflected
+  // light — you see almost nothing OFF it and almost everything THROUGH it — so
+  // its albedo goes to nothing, its roughness to a polish, and its normal back
+  // to the face's own plane because a pour is level.
+  //
+  // Everything after this is then the ordinary lighting model doing the work: a
+  // smooth dielectric picks up a sharp specular from the lamp and a mirror of
+  // the sky at a glancing angle, both for free, both consistent with the sheet
+  // the cube is standing on because it is the same maths.
+  //
+  // What is NOT here is the fog. That is the one part of this object that moves,
+  // so it cannot live in a cached picture — it is applied live in the scene pass
+  // from the path length below. See CarveGlass.
+  s.albedo = mix(s.albedo, vec3(0.004), glass.amount);
+  s.roughness = mix(s.roughness, max(0.055, kMinRoughness), glass.amount);
+  s.f0 = mix(s.f0, vec3(0.04), glass.amount);
+  s.fuzz *= 1.0 - glass.amount;
+  s.through *= 1.0 - glass.amount;
+  s.normal = normalize(mix(s.normal, n, glass.amount));
+  s.glass = glass;
   return s;
 }
 
@@ -2475,9 +2600,9 @@ CubeSurface cubeSurfaceFiltered(vec3 p, vec3 n, vec3 v, float spin, float lod) {
   // Barely tilted, or looking straight down the normal — nothing to correct,
   // and no direction to correct along.
   if (aniso < 1.15 || vtl < 1e-4) {
-    return cubeSurface(p, n, spin, lod, vec3(0.0, 1.0, 0.0), 1.0);
+    return cubeSurface(p, n, v, spin, lod, vec3(0.0, 1.0, 0.0), 1.0);
   }
-  return cubeSurface(p, n, spin, lod, vt / vtl, aniso);
+  return cubeSurface(p, n, v, spin, lod, vt / vtl, aniso);
 }
 
 /// The cube as it appears in a REFLECTION: an average, not a surface.
@@ -2518,13 +2643,13 @@ vec3 shadeCubeCoarse(vec3 p, vec3 n) {
   //
   // It costs one distance lookup rather than the full material: where the cut
   // is, how deep, and nothing else.
-  vec3 lp = spinInto() * (p - cubeOrigin());
-  vec3 nl = spinInto() * n;
-  float lod = cubeLod();
-  float depth = carveDepthAt(lp, nl, lod);
-  float carve = clamp(
-    depth / max(kCarveDepth * uCubeHalf * uCarve, 1e-6), 0.0, 1.0);
-  vec3 emitted = kEnergyTint * carve * uEmit * 1.6 * cubeEnergyFlow(p);
+  // Looked at head-on, which is all a reflection this dim can justify: the
+  // Fresnel and the refraction would each cost more than the whole term is
+  // worth once it has been multiplied by 4% and landed on top of the energy.
+  CarveGlass g = carveGlass(p, n, n, cubeLod());
+  float dens = smoothstep(kFogLow, kFogHigh, carveFogField(p));
+  vec3 emitted = kEnergyTint * dens * uEmit *
+                 (g.path * kFogGain * g.trans * g.amount + g.edge * kEdgeGain);
 
   return direct + envColor(n) * albedo + emitted;
 }
@@ -2651,7 +2776,20 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod,
   // not care, because it did not come from the world. Multiplying it by the
   // occlusion would darken the light exactly where the cut is deepest — which is
   // precisely where the most of it should be getting out.
-  emit = s.emission;
+  // ⚠️ THE CHANNEL IS DESCRIBED, NOT LIT, and that separation is what lets
+  // something moving sit on a cached object. How far light travels through the
+  // glass, how much of it gets in, and where the cut edges are: all fixed for a
+  // given pose, all expensive, all cached. What is IN the glass moves, and is
+  // applied per frame in the scene pass for the price of one noise field.
+  //
+  // Packed to survive an 8-bit texture: the path is normalised against the
+  // longest one the geometry can produce, and the transmission is weighted by
+  // coverage so a pixel half on the letter contributes half.
+  emit = vec3(
+    clamp(s.glass.path / kCarvePathMax, 0.0, 1.0),
+    s.glass.trans * s.glass.amount,
+    s.glass.edge
+  );
   return direct + ibl * s.occlusion;
 }
 
@@ -3259,9 +3397,30 @@ void main() {
     // Everything static stays cached; only how much energy is arriving right
     // now is live. That is the whole trade — the letters breathe with the same
     // field that moves across the glass, and the frame rate does not notice.
-    vec3 emitted = emitSum;
-    if (tCube.x > 0.0 && emitSum != vec3(0.0)) {
-      emitted *= cubeEnergyFlow(kEye + rd * tCube.x);
+    // ⚠️ THE FOG INSIDE THE LETTERS, AND THE ONLY PART OF THIS CUBE COMPUTED
+    // EVERY FRAME. Three octaves of noise on a few thousand pixels, against the
+    // thousand hash lookups the material costs — which is why the cube can carry
+    // something moving and still be drawn once and kept.
+    //
+    // ⚠️ AND IT IS THE SHEET'S OWN CHAIN, END TO END: the same field, the same
+    // threshold, the same colour constant. Not a colour matched by eye — the
+    // same substance, read in a different place. That is the answer to why the
+    // first attempt could never be tuned into this one.
+    vec3 emitted = vec3(0.0);
+    if (tCube.x > 0.0 && emitSum.r + emitSum.b > 1e-4) {
+      float path = emitSum.r * kCarvePathMax;
+      vec3 hit = kEye + rd * tCube.x;
+      // Sampled at the middle of the glass rather than at its surface: what is
+      // seen is the whole column, and its midpoint is the honest single sample
+      // of it. Free, and it makes a deep channel read as deeper.
+      float dens = smoothstep(kFogLow, kFogHigh,
+                              carveFogField(hit - rd * (path * 0.5)));
+      // Fog seen through the glass, plus the rim where the glass is cut against
+      // stone — the same reason the sheet's far edge is the brightest thing on
+      // it. The rim reaches slightly onto the stone, which is what stops the
+      // light ending in a hard line.
+      emitted = kEnergyTint * dens * uEmit *
+                (path * kFogGain * emitSum.g + emitSum.b * kEdgeGain);
     }
     col = mix(col, sum + emitted, cov);
   }

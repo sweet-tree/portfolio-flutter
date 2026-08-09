@@ -174,6 +174,21 @@ final double kGlyphSize = qDouble('glyph', 1.1).clamp(0.3, 2.0);
 /// that merely sit next to each other.
 final double kEmit = qDouble('emit', 1).clamp(0.0, 4.0);
 
+/// How full of glass the carved channel is. `?inlay=`.
+///
+/// ⚠️ A KNOB BECAUSE I ASKED HIM A QUESTION HE COULD NOT ANSWER. I described
+/// two options in a paragraph — glass poured level with the stone, or sitting
+/// below it with the stone lipping over — and asked him to choose. His answer
+/// was that a paragraph about two things nobody can see is not something anyone
+/// can have an opinion about, which is right, and is written down elsewhere in
+/// this project as a rule I keep having to relearn.
+///
+/// 1 pours it level: a deliberate inlay, finished, precious. Lower sinks it
+/// below the rim, so stone lips over the edge and catches shadow along one side
+/// — older, rougher, more weathered. Both are defensible; they are different
+/// objects, and he can now look at them instead of reading about them.
+final double kInlay = qDouble('inlay', 1).clamp(0.15, 1.0);
+
 /// Stones across one face.
 ///
 /// ⚠️ THE ONLY ONE WITH A REAL FLOOR AND CEILING RATHER THAN A RANGE. A face is
@@ -410,7 +425,7 @@ class _CubeCache {
   /// below is the part that can actually vary.
   static final String _knobs = [
     kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
-    kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kGlass, kOff,
+    kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kGlass, kOff,
     // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
     // before the first frame so this should always be true — but "should
     // always" is the kind of assumption a cache key exists to not rely on. If
@@ -655,7 +670,8 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(26, kCubeZ)
         ..setFloat(27, kCarve)
         ..setFloat(28, kGlyphSize)
-        ..setFloat(29, kEmit);
+        ..setFloat(29, kEmit)
+        ..setFloat(30, kInlay);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass
