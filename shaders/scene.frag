@@ -72,6 +72,21 @@ uniform float uBlocks;   // ?blocks= stones across one face
 uniform float uCubeHalf; // ?cube=   the cube's own size in the world
 uniform float uSpin;     // ?spin=   the cube's resting pose, in radians
 uniform float uGlass;    // ?glass=  0 the diagnostic surface, 1 real glass
+uniform vec2 uSpinCS;    // (cos, sin) of the pose — see spinInto()
+
+// ⚠️ TEMPORARY MEASURING TOOL — `?off=`, a sum of switches. Remove with its
+// Dart setFloat when the profiling is done.
+//
+// It exists because guessing at where a shader spends its time has been wrong
+// three times running. Turning one term off and reading the frame rate is the
+// only honest way to find out, and it takes one build instead of one per guess.
+//
+//   1 cast shadow   2 contact darkening   4 the energy
+//   8 what the glass transmits           16 the reflection and its ghost
+//  32 the star field                     64 the cube's antialiasing
+//
+// Add them: ?off=3 drops both the shadow and the darkening.
+uniform float uOff;
 
 out vec4 fragColor;
 
@@ -162,10 +177,38 @@ const vec3 kAccent = vec3(1.0, 0.353, 0.212);
 /// is what made it possible for them to drift apart.
 const float kExposure = 1.25;
 
+bool isOff(float bit) { return mod(floor(uOff / bit), 2.0) >= 1.0; }
+
 mat3 rotY(float a) {
   float c = cos(a);
   float s = sin(a);
   return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c);
+}
+
+// ⚠️ THE CUBE'S POSE, PRE-TURNED INTO A MATRIX ON THE CPU.
+//
+// Every ray/cube test rotates into the cube's frame and its result back out —
+// two matrices, so two sines and two cosines. A table pixel casts 28 of those
+// tests between its shadow and its occlusion, and a pixel on the cube's edge
+// casts 64. That was 56 and 128 pairs of transcendentals per pixel, all of them
+// computing the same two numbers, because the pose is a uniform: one value for
+// the entire frame.
+//
+// Sine and cosine run on a separate, slower unit on every GPU. Doing them once
+// per frame on the CPU instead of a hundred times per pixel is free.
+//
+// `uSpinCS` is (cos, sin) of the pose. The sign flips between rotating into the
+// cube's frame and back out, which is the only difference between the two.
+mat3 spinInto() {
+  return mat3(uSpinCS.x, 0.0, -uSpinCS.y,
+              0.0, 1.0, 0.0,
+              uSpinCS.y, 0.0, uSpinCS.x);
+}
+
+mat3 spinOutOf() {
+  return mat3(uSpinCS.x, 0.0, uSpinCS.y,
+              0.0, 1.0, 0.0,
+              -uSpinCS.y, 0.0, uSpinCS.x);
 }
 
 // ── Background field ────────────────────────────────────────────────────────
@@ -888,10 +931,10 @@ vec2 boxIntersectLocal(vec3 ro, vec3 rd, out vec3 normal) {
 /// The cube in WORLD space. It spins about its vertical axis, the way an
 /// object on a table would — it does not tumble, because it is resting.
 vec2 cubeIntersect(vec3 ro, vec3 rd, float spin, out vec3 normal) {
-  mat3 toLocal = rotY(-spin);
+  mat3 toLocal = spinInto();
   vec3 nl;
   vec2 t = boxIntersectLocal(toLocal * (ro - cubeOrigin()), toLocal * rd, nl);
-  normal = rotY(spin) * nl;
+  normal = spinOutOf() * nl;
   return t;
 }
 
@@ -933,7 +976,36 @@ vec2 poisson(int i) {
 /// Fraction of the AREA light visible from `p`. Real soft shadow: each tap is
 /// a ray at a different point on the light's disc, so the penumbra widens
 /// with distance from the contact exactly as it does in life.
+/// The cube's bounding sphere: centred on its origin, reaching a corner.
+/// Derived, because the cube's size is adjustable.
+float cubeRadius() { return uCubeHalf * 1.7320508; }
+
+/// ⚠️ CAN THE CUBE POSSIBLY BLOCK THE LIGHT FROM HERE? Answered exactly, before
+/// any ray is cast.
+///
+/// The shadow of an object lit from above is CONTAINED — this light stands at
+/// 3.4 and the cube reaches 1.4, so its shadow falls within about two units of
+/// it. The table is twenty-two units wide and four deep. Nearly every pixel of
+/// it was casting sixteen rays to rediscover that nothing was in the way.
+///
+/// The test: how close does the line from here to the light pass to the cube's
+/// bounding sphere? Widened by the light's own radius, because the sixteen taps
+/// aim at a disc rather than a point. Beyond that, no tap can be blocked and
+/// the answer is exactly 1 — not approximately.
+bool couldShadow(vec3 p) {
+  vec3 toLight = kLightPos - p;
+  float len = length(toLight);
+  vec3 l = toLight / len;
+  vec3 toCube = cubeOrigin() - p;
+  // Closest approach of the segment to the cube's centre.
+  float along = clamp(dot(toCube, l), 0.0, len);
+  float miss = length(toCube - l * along);
+  return miss < cubeRadius() + kLightRadius;
+}
+
 float lightVisibility(vec3 p, vec3 n, float spin, float rotation) {
+  if (!couldShadow(p)) return 1.0;
+
   vec3 toLight = kLightPos - p;
   float dist = length(toLight);
   vec3 l = toLight / dist;
@@ -968,6 +1040,13 @@ float lightVisibility(vec3 p, vec3 n, float spin, float rotation) {
 /// weighted rays over the hemisphere, counting how many are blocked. This is
 /// the contact darkening, and it is measured rather than tuned.
 float occlusion(vec3 p, vec3 n, float spin, float rotation) {
+  // ⚠️ THE SAME REASONING AS couldShadow, and this one is even simpler: every
+  // ray here is only kReach long, so if the cube's bounding sphere is further
+  // away than that, not one of the twelve can reach it. Nothing is occluded and
+  // the answer is exactly 1.
+  const float kReachTest = 2.2;
+  if (length(cubeOrigin() - p) > kReachTest + cubeRadius()) return 1.0;
+
   vec3 tangent = normalize(cross(abs(n.y) < 0.99 ? vec3(0, 1, 0) : vec3(1, 0, 0), n));
   vec3 bitangent = cross(n, tangent);
   float ca = cos(rotation);
@@ -1071,9 +1150,29 @@ float mossHeight(vec3 q, float lod) {
 // effects layered on each other; one is the reason for the other, which is
 // what makes both read as real instead of applied.
 
-vec3 hash33(vec3 p) {
-  return vec3(hash31(p), hash31(p + 11.317), hash31(p + 27.713));
+/// Four decorrelated numbers for a cell, in ONE pass.
+///
+/// ⚠️ THE CELL PATTERNS ARE THE MOST EXPENSIVE THING IN THE FRAME, and this is
+/// where they spent it. Each of the 54 cells a block lookup visits wanted three
+/// numbers for its jitter and a fourth for its size, and asked FOUR SEPARATE
+/// TIMES — four independent hashes, each with its own multiplies and fractions,
+/// for what one pass produces. Measured, the cube's material is 10.6 ms of a
+/// 43.5 ms frame, more than every other term put together.
+///
+/// This is the standard mixing trick: perturb by a dot product of the vector
+/// with a shuffle of itself, then take fractions of shuffled products. One pass,
+/// better distribution than repeating a weaker hash with an offset.
+///
+/// ⚠️ IT PRODUCES DIFFERENT NUMBERS, so the wall is a different wall — the same
+/// kind of masonry with the stones laid out differently. Nothing about its
+/// character changes; it was random before and is random now.
+vec4 hash43(vec3 p) {
+  vec4 q = fract(vec4(p.xyzx) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+  q += dot(q, q.wzxy + 33.33);
+  return fract((q.xxyz + q.yzzw) * q.zywx);
 }
+
+vec3 hash33(vec3 p) { return hash43(p).xyz; }
 
 /// Distance to the nearest JOINT, and the direction that distance grows in.
 ///
@@ -1105,7 +1204,7 @@ vec3 hash33(vec3 p) {
 /// shifting the plane by half the difference in radii is its tangent at the
 /// closest approach, and at these scales the difference is far under a pixel.
 float cellWeight(vec3 cell) {
-  return hash31(cell + 7.13) * 0.30;
+  return hash43(cell).w * 0.30;
 }
 
 vec4 masonry(vec3 p, out float stone, out vec3 stoneCell) {
@@ -1340,7 +1439,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // The pixel footprint scales with it, or the detail fading would be measuring
   // against the wrong yardstick.
   float mScale = kRefHalf / uCubeHalf;
-  vec3 q = rotY(-spin) * (p - cubeOrigin()) * mScale;
+  vec3 q = spinInto() * (p - cubeOrigin()) * mScale;
   lod *= mScale;
 
   // ⚠️ THE MASONRY IS SAMPLED WITH `q`, EVERYTHING FINE WITH `qf`.
@@ -1352,7 +1451,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // aliases is the fine work — the moss shoots, the crust's cracks, the stone's
   // grain, the fruiting dots. Those have no shape anyone can name, so making
   // them coarser along the unresolvable axis costs nothing anyone can see.
-  vec3 sdir = rotY(-spin) * stretch;
+  vec3 sdir = spinInto() * stretch;
   float squash = 1.0 - 1.0 / max(aniso, 1.0);
   vec3 qf = squashAlong(q, sdir, squash);
 
@@ -1428,12 +1527,19 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // Stepping by the pixel footprint (never smaller) means the slope is measured
   // over exactly what is visible — so the relief softens as the cube gets
   // smaller instead of turning into per-pixel noise.
+  // ⚠️ TWO SAMPLES, NOT THREE. The slope was measured along all three world
+  // axes and then, further down, had its component along the normal projected
+  // straight back out and discarded — a third of this field's cost computing
+  // something that was thrown away. Only the part lying ALONG the face can tilt
+  // a normal, so measuring along the face's own two directions gives exactly
+  // the same answer for two thirds of the work.
   float e = max(lod, 0.004);
-  vec3 grad = vec3(
-    mossHeight(qf + squashAlong(vec3(e, 0.0, 0.0), sdir, squash), lod),
-    mossHeight(qf + squashAlong(vec3(0.0, e, 0.0), sdir, squash), lod),
-    mossHeight(qf + squashAlong(vec3(0.0, 0.0, e), sdir, squash), lod)
-  ) - h;
+  vec3 across = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0.0, 1.0, 0.0))
+                                          : vec3(1.0, 0.0, 0.0));
+  vec3 down = cross(n, across);
+  float hAcross = mossHeight(qf + squashAlong(across * e, sdir, squash), lod);
+  float hDown = mossHeight(qf + squashAlong(down * e, sdir, squash), lod);
+  vec3 grad = (across * (hAcross - h) + down * (hDown - h));
 
   // ⚠️ WHERE MOSS GROWS: where water sits. Upward faces are lusher than
   // vertical ones — but only somewhat. The references settle it: a carved
@@ -1626,10 +1732,18 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // itself, three octaves smaller: the machinery is identical, only the scale
   // and the meaning change. Its slope comes back analytically, so the fissures
   // carry real relief for nothing.
+  // ⚠️ ONLY WHERE THERE IS CRUST. This is a second full cell pattern — as
+  // expensive as the wall itself — and it was running on every pixel of the
+  // cube, including every one buried under moss where its result is multiplied
+  // by zero. The default stands for "far from any fissure", which is what a
+  // pixel with no crust on it should look like anyway.
   const float kAreoleScale = 32.0;
-  float areoleId;
-  vec3 areoleCell;
-  vec4 areole = masonry(qf * kAreoleScale, areoleId, areoleCell);
+  float areoleId = 0.5;
+  vec3 areoleCell = vec3(0.0);
+  vec4 areole = vec4(1.0, 0.0, 1.0, 0.0);
+  if (crust > 0.002) {
+    areole = masonry(qf * kAreoleScale, areoleId, areoleCell);
+  }
   float fissureW = max(0.10, lod * kAreoleScale * 1.6);
   float plate = smoothstep(0.0, fissureW, areole.x);
   crustC *= mix(0.62, 1.06, plate) * mix(0.90, 1.10, areoleId);
@@ -1926,7 +2040,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
       background = mix(background, fieldColor(uvScreen, aspect, fragCoord),
                        uSky);
     }
-    if (uStars > 0.0) {
+    if (uStars > 0.0 && !isOff(32.0)) {
       background = mix(background, starsColor(rd), uStars * skyAmount);
     }
   }
@@ -1967,6 +2081,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
 
     // Reflection: a real reflected ray, shaded by the same cube code.
     vec3 reflected = vec3(0.0);
+    if (!isOff(16.0)) {
     vec3 rr = reflect(rd, n);
     vec3 nr;
     vec2 tr = cubeIntersect(p + n * 1e-3, rr, spin, nr);
@@ -1975,13 +2090,16 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     } else {
       reflected = envColor(rr) * 0.25;
     }
+    }
 
     // Transmission: the background REFRACTED through the surface, not just
     // shown through it. The deviation is projected back onto the screen and
     // used to resample the field.
     vec3 rt = refract(rd, n, 1.0 / kIor);
     vec2 deviation = (rt.xz - rd.xz) * 0.16;
-    vec3 transmitted = fieldColor(uvScreen + deviation, aspect, fragCoord);
+    vec3 transmitted = isOff(8.0)
+        ? background
+        : fieldColor(uvScreen + deviation, aspect, fragCoord);
 
     // Second surface. A glass sheet has two interfaces, and the dimmer,
     // offset ghost off the back one is the specific tell of glass rather
@@ -1991,14 +2109,14 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     vec3 p2 = p + rt * kGlassThickness;
     vec2 tr2 = cubeIntersect(p2 + n * 1e-3, rr2, spin, nr2);
     vec3 second = vec3(0.0);
-    if (tr2.x > 0.0) {
+    if (tr2.x > 0.0 && !isOff(16.0)) {
       second = shadeCubeCoarse(p2 + n * 1e-3 + rr2 * tr2.x, nr2) * 0.35;
     }
 
     // Traced, not tuned: how much of the light and of the sky this point can
     // actually see with the cube in the way.
-    float shadow = lightVisibility(p, n, spin, rotation);
-    float ao = occlusion(p, n, spin, rotation);
+    float shadow = isOff(1.0) ? 1.0 : lightVisibility(p, n, spin, rotation);
+    float ao = isOff(2.0) ? 1.0 : occlusion(p, n, spin, rotation);
 
     // ⚠️ DIAGNOSTIC MATERIAL — an opaque light floor, not glass.
     //
@@ -2040,7 +2158,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
       vec3 cut = vec3(0.80, 0.86, 1.0) * 2.4 + kAccent * 0.35;
       vec3 surface = mix(transmitted, reflected + second, fres);
       surface *= mix(0.18, 1.0, shadow) * mix(0.25, 1.0, ao);
-      surface += surfaceEnergy(p, n) * (1.0 - fres);
+      if (!isOff(4.0)) surface += surfaceEnergy(p, n) * (1.0 - fres);
       surface = mix(surface, cut, isCutEdge);
       return mix(background, surface, presence);
     }
@@ -2051,7 +2169,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     diagnostic += reflected * fres * 0.6;   // still shows the reflection
 
     // The energy: across the ledge, over the front edge, down the panel.
-    diagnostic += surfaceEnergy(p, n);
+    if (!isOff(4.0)) diagnostic += surfaceEnergy(p, n);
 
     // The cut edge glows: light travelling inside the sheet by total internal
     // reflection escapes where the glass is cut. Blended by how far the
@@ -2183,7 +2301,7 @@ void main() {
 
   vec3 toCentre = cubeOrigin() - kEye;
   float tc = max(dot(toCentre, rd), 0.0);
-  vec3 localNear = rotY(-spin) * (kEye + rd * tc - cubeOrigin());
+  vec3 localNear = spinInto() * (kEye + rd * tc - cubeOrigin());
   vec3 qn = abs(localNear) - cubeHalf();
   float nearSurface =
       length(max(qn, 0.0)) + min(max(qn.x, max(qn.y, qn.z)), 0.0);
@@ -2193,7 +2311,7 @@ void main() {
 
   float edgeDist = 1e9;
   if (tCube.x > 0.0) {
-    vec3 hp = abs(rotY(-spin) * (kEye + rd * tCube.x - cubeOrigin()));
+    vec3 hp = abs(spinInto() * (kEye + rd * tCube.x - cubeOrigin()));
     vec3 d3 = cubeHalf() - hp;
     float lo = min(d3.x, min(d3.y, d3.z));
     float hi = max(d3.x, max(d3.y, d3.z));
@@ -2238,7 +2356,8 @@ void main() {
     }
   }
 
-  if (corners || abs(nearSurface) < px * 6.0 || edgeDist < px * 6.0) {
+  if (!isOff(64.0) &&
+      (corners || abs(nearSurface) < px * 6.0 || edgeDist < px * 6.0)) {
     // 8x8 rotated grid with a Gaussian reconstruction filter.
     //
     // ⚠️ THE SAMPLES RESOLVE COVERAGE. THE MATERIAL IS EVALUATED PER FACE.

@@ -109,7 +109,13 @@ double get kBlocks => qDouble('blocks', 3.4).clamp(3.0, 9.0);
 /// Fill rate is the cost model, so this is the one lever that reduces work
 /// without changing what the shader computes — 0.7 is roughly half the pixels.
 /// Only the shader softens; text is a separate layer at full resolution.
-const double kSceneScale = 0.7;
+///
+/// ⚠️ AND IT IS THE MEASURING INSTRUMENT. Frame rate near the display's cap
+/// tells you almost nothing: everything piles up against the same ceiling and
+/// differences vanish. Raising this pushes the whole scene well below the cap,
+/// where a change of a few percent is a change of a few frames instead of
+/// nothing at all. Profile at 1.2, decide at 0.7. `?scale=`.
+double get kSceneScale => qDouble('scale', 0.7).clamp(0.3, 2.0);
 
 class WorldScene extends StatefulWidget {
   const WorldScene({required this.camera, super.key});
@@ -242,7 +248,13 @@ class _ScenePainter extends CustomPainter {
       // uSpin — the cube's resting pose. See kSpin.
       ..setFloat(20, kSpin * math.pi / 180.0)
       // uGlass — the table's material. See kGlass.
-      ..setFloat(21, kGlass);
+      ..setFloat(21, kGlass)
+      // uSpinCS — the pose as (cos, sin), turned once here rather than a
+      // hundred times per pixel in the shader. See spinInto().
+      ..setFloat(22, math.cos(kSpin * math.pi / 180.0))
+      ..setFloat(23, math.sin(kSpin * math.pi / 180.0))
+      // uOff — TEMPORARY profiling switches. `?off=`. Remove with the shader's.
+      ..setFloat(24, qDouble('off', 0));
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
