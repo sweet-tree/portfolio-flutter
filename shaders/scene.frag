@@ -394,6 +394,33 @@ vec3 fieldColor(vec2 uv, float aspect, vec2 fragCoord) {
 const float kCycleDistance = 1.15;
 const float kCyclePeriod = 5.0;
 
+/// The energy's colour, wherever it appears.
+///
+/// ⚠️ ONE CONSTANT, FOUR PLACES: the flow across the glass, the glow inside the
+/// carving, the pool that glow casts back onto the sheet, and its reflection.
+/// They are one substance seen four ways, and the moment any of them gets its
+/// own value they stop being one substance and become four effects that happen
+/// to sit near each other.
+const vec3 kEnergyTint = vec3(0.30, 0.58, 1.00) * 1.15 + kAccent * 0.12;
+
+/// How much light the carving is putting out RIGHT NOW, as one number for the
+/// whole pattern.
+///
+/// ⚠️ THIS IS DELIBERATELY NOT THE LOCAL FIELD, and the reason is statistical
+/// rather than practical. What lands on the glass is the SUM of every lit point
+/// on the cube, and a sum of many samples of a random field varies far less than
+/// any single one of them does — so a pool of light cast by the whole carving
+/// should breathe gently while individual letters churn. Following the local
+/// flow here would make the whole table flicker in step with one letter, which
+/// is both wrong and the kind of wrong that reads as a video effect.
+///
+/// Two waves at unrelated rates, so it never falls into an obvious loop, and
+/// timed against the same cycle as everything else.
+float carvingOutput() {
+  float t = uTime / kCyclePeriod;
+  return 0.78 + 0.22 * (0.62 * sin(t * 2.0) + 0.38 * sin(t * 3.1 + 1.7));
+}
+
 /// One advected sample of the energy field.
 ///
 /// [advect] is how far the sample point has been slid outward along its own
@@ -490,7 +517,7 @@ vec3 surfaceEnergy(vec3 p, vec3 n) {
 
   // Cooler than the sky field, which is warm from the accent. Same family,
   // clearly a different substance.
-  vec3 tint = vec3(0.30, 0.58, 1.00) * 1.15 + kAccent * 0.12;
+  vec3 tint = kEnergyTint;
 
   // A LOWER threshold turns more of the noise range into visible energy, so
   // the clouds are broader rather than only their brightest peaks showing.
@@ -735,6 +762,33 @@ vec3 starsColor(vec3 dir) {
   // This is the only value in the shader chosen for looks that was touched by
   // that move; every other one is free to be re-tuned by eye.
   return c + vec3(0.02138, 0.02595, 0.03425);
+}
+
+/// How much of the carving's light reaches a point on the sheet.
+///
+/// ⚠️ WITHOUT THIS THE GLOW IS PAINT, NOT LIGHT. A bright shape on an object
+/// that leaves no trace on anything around it is the single clearest tell of a
+/// fake — the eye does not check the shape, it checks whether the world agrees
+/// that light is there. The letters can be as beautiful as we like; until the
+/// glass under them catches something, they are a sticker.
+///
+/// The carving is spread over four faces, so this treats it as one source at the
+/// cube's own centre. That is a real approximation and worth naming: it cannot
+/// know that the `Di` face is pointing one way and the `Se` face another, so the
+/// pool it casts is symmetrical when the truth is slightly lobed. At the size
+/// this appears — a soft wash on dark glass, under an object that is itself
+/// sitting in contact shadow — the difference is not resolvable, and the honest
+/// alternative costs four times as much for something nobody can see.
+///
+/// Falls off with the square of the distance because light does, softened by the
+/// source's own size so it does not divide by nothing at the cube's foot.
+float carvingIrradiance(vec3 p, vec3 n) {
+  vec3 d = cubeOrigin() - p;
+  float dist2 = max(dot(d, d), 1e-5);
+  vec3 dir = d * inversesqrt(dist2);
+  // A surface only catches light in proportion to how squarely it faces it.
+  float cosN = max(dot(n, dir), 0.0);
+  return clamp(cosN / (dist2 + uCubeHalf * uCubeHalf * 2.0), 0.0, 1.0);
 }
 
 /// How much energy is arriving at this point of the cube's surface, right now.
@@ -1772,9 +1826,20 @@ float carveDist(vec3 lp, vec3 nl, float lod) {
 float carveDepthAt(vec3 lp, vec3 nl, float lod) {
   float d = carveDist(lp, nl, lod);
   if (d > 0.0) return 0.0;
-  // The wall's run, in the same units as the distance. Wider than it is deep,
-  // which is what a chisel leaves.
-  const float kWall = 0.022;
+  // ⚠️ THE WALL'S RUN, AND IT WAS THREE TIMES TOO WIDE — he saw the symptom
+  // before I found the cause: only the fattest part of the `S` really lit up.
+  //
+  // A stroke can only reach full depth if it is wider than this ramp, so at
+  // 0.022 the numbers came out: Lora's thick stroke is 0.038 in face units and
+  // bottomed out, its thin stroke is 0.015 and stopped at 68% of the depth. The
+  // widest point of the `S` bowl was the only place in either letter at full
+  // depth. Lora's stroke contrast is 2.6 to 1 — measured when the face was
+  // chosen — so this face will always want a cut that bottoms out fast.
+  //
+  // 0.008 is under the thin stroke's half-width, so every part of every letter
+  // now reaches the floor. It is also closer to how inscription is actually
+  // cut: a chisel leaves a defined edge, not a long taper.
+  const float kWall = 0.008;
   float t = clamp(-d / kWall, 0.0, 1.0);
   return kCarveDepth * uCubeHalf * uCarve * t;
 }
@@ -2270,13 +2335,16 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // The cube is the source and the surface carries it outward, so if these two
   // were tuned separately they would drift into being two different effects that
   // merely happen to sit next to each other.
-  vec3 emitTint = vec3(0.30, 0.58, 1.00) * 1.15 + kAccent * 0.12;
-
   // Brightest at the FLOOR of the cut and falling off up its walls, because
   // that is where the channel is deepest and the least stone is left over it.
-  // Squared, so the walls stay dark and the light reads as coming from inside
-  // rather than as a glowing outline painted around the letter.
-  float depthOut = carve * carve;
+  //
+  // ⚠️ NO LONGER SQUARED. Squaring was my own choice, to keep the walls dark —
+  // and with the wall ramp three times too wide it was doubling the penalty on
+  // exactly the thin strokes that were already losing depth: 68% of the depth
+  // became 46% of the brightness. Now the walls are narrow enough to stay dark
+  // on their own, and the light along a letter follows the cut rather than the
+  // stroke's width.
+  float depthOut = carve;
 
   // ⚠️ AND IT COMES THROUGH THE MOSS RATHER THAN BEING BLOCKED BY IT. Growth
   // sitting in the channel is lit from BEHIND — the one lighting condition that
@@ -2285,7 +2353,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // paint over a lamp, and would waste the most interesting thing the two
   // features do together.
   vec3 through = mix(vec3(1.0), mossC * 9.0, moss * 0.85);
-  s.emission = emitTint * depthOut * uEmit * 1.6 * through;
+  s.emission = kEnergyTint * depthOut * uEmit * 1.6 * through;
 
   vec3 slope = blockTilt + stoneSlope + areoleSlope + carveSlope +
                (grad / e) * mix(0.035, 0.150, moss);
@@ -2439,7 +2507,26 @@ vec3 shadeCubeCoarse(vec3 p, vec3 n) {
   vec3 albedo = kAverage * uLevel;
   vec3 l = normalize(kLightPos - p);
   vec3 direct = albedo * (1.0 / 3.14159265) * max(dot(n, l), 0.0) * 3.4;
-  return direct + envColor(n) * albedo;
+
+  // ⚠️ THE CARVING IS THE ONE THING THAT SURVIVES THIS AVERAGE, and it has to.
+  // Everything else here is deliberately reduced to its mean, because nobody can
+  // pick a lichen colony out of a reflection arriving at 4% through rough dark
+  // glass. But the letters are not surface detail — they are the brightest thing
+  // on the object by an order of magnitude, and a bright thing standing over a
+  // reflective sheet that shows no sign of it is exactly the mistake this whole
+  // pass of work is about. A glowing object with no reflection is a hologram.
+  //
+  // It costs one distance lookup rather than the full material: where the cut
+  // is, how deep, and nothing else.
+  vec3 lp = spinInto() * (p - cubeOrigin());
+  vec3 nl = spinInto() * n;
+  float lod = cubeLod();
+  float depth = carveDepthAt(lp, nl, lod);
+  float carve = clamp(
+    depth / max(kCarveDepth * uCubeHalf * uCarve, 1e-6), 0.0, 1.0);
+  vec3 emitted = kEnergyTint * carve * uEmit * 1.6 * cubeEnergyFlow(p);
+
+  return direct + envColor(n) * albedo + emitted;
 }
 
 // ── Shading ─────────────────────────────────────────────────────────────────
@@ -2711,10 +2798,14 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     vec2 lightUv =
         (surfaceCoord(p, n).xy - cubeOnSurface()) / (2.0 * kLightMapReach)
         + 0.5;
-    vec2 lit = vec2(1.0);
+    // Red how much of the lamp reaches here, green how open the sky is, blue how
+    // much of the CARVING can be seen from here. Outside the map the first two
+    // are 1 and the third is 0 — fully lit, and far enough away that the cube's
+    // own glow has fallen to nothing.
+    vec3 lit = vec3(1.0, 1.0, 0.0);
     if (lightUv.x > 0.0 && lightUv.x < 1.0 &&
         lightUv.y > 0.0 && lightUv.y < 1.0) {
-      lit = texture(uLightMap, lightUv).rg;
+      lit = texture(uLightMap, lightUv).rgb;
     }
     // ⚠️ READ, NOT COMPUTED — see uLayer 5. The flow is cloud: smooth over the
     // whole surface, with no edge of its own anywhere in it. Every edge in this
@@ -2725,6 +2816,15 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
 
     float shadow = isOff(1.0) ? 1.0 : lit.r;
     float ao = isOff(2.0) ? 1.0 : lit.g;
+
+    // ⚠️ THE CARVING'S LIGHT, LANDING ON THE GLASS. The shape of the pool is
+    // baked; how hard the carving is running at this instant is applied here, so
+    // the pool breathes with the letters rather than sitting still under them.
+    //
+    // Scaled by uEmit so the whole chain moves together on one knob: turn the
+    // carving off and its reflection in the world goes with it, which is what
+    // makes `?emit=0` an honest A/B rather than a half-disabled state.
+    vec3 spill = kEnergyTint * lit.b * carvingOutput() * uEmit * 1.35;
 
     // ── THE GLASS MATERIAL — the real one, and now the DEFAULT ──────────────
     //
@@ -2756,6 +2856,11 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
       vec3 cut = vec3(0.80, 0.86, 1.0) * 2.4 + kAccent * 0.35;
       vec3 surface = mix(transmitted, reflected + second, fres);
       surface *= mix(0.18, 1.0, shadow) * mix(0.25, 1.0, ao);
+      // ⚠️ THE SPILL IS OCCLUDED, UNLIKE THE EMISSION ITSELF. Light a surface
+      // MAKES ignores what it can see; light it RECEIVES does not, and this is
+      // received — so the glass right under the cube, which can barely see the
+      // sky, can barely see the carving either.
+      if (!isOff(4.0)) surface += spill * ao * (1.0 - fres);
       if (!isOff(4.0)) surface += energyHere * (1.0 - fres);
       surface = mix(surface, cut, isCutEdge);
       return mix(background, surface, presence);
@@ -2776,7 +2881,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     diagnostic += reflected * fres * 0.6;   // still shows the reflection
 
     // The energy: across the ledge, over the front edge, down the panel.
-    if (!isOff(4.0)) diagnostic += energyHere;
+    if (!isOff(4.0)) diagnostic += energyHere + spill * ao;
 
     // The cut edge glows: light travelling inside the sheet by total internal
     // reflection escapes where the glass is cut. Blended by how far the
@@ -3130,8 +3235,14 @@ void main() {
     vec3 lp;
     vec3 ln;
     surfacePoint(surf, lp, ln);
+    // ⚠️ THE THIRD CHANNEL WAS SITTING EMPTY, and the spill belongs in it for
+    // exactly the reasons the other two are here: it depends only on the cube
+    // and the floor, never on the camera or the clock. Its SHAPE is baked; how
+    // brightly the carving is running at this instant is applied live. Same
+    // split as the emission on the cube itself.
     fragColor = vec4(lightVisibility(lp, ln, spin, rotation),
-                     occlusion(lp, ln, spin, rotation), 0.0, 1.0);
+                     occlusion(lp, ln, spin, rotation),
+                     carvingIrradiance(lp, ln), 1.0);
     return;
   }
 

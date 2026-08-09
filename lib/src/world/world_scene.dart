@@ -204,6 +204,24 @@ final double kSceneScale = qDouble('scale', 1).clamp(0.3, 2.0);
 /// TEMPORARY profiling switches — `?off=`, a sum. Remove with the shader's.
 final double kOff = qDouble('off', 0);
 
+/// Pins the scene's clock to a fixed second. Negative means run normally.
+///
+/// ⚠️ A MEASURING INSTRUMENT, and it exists because two separate conclusions
+/// today were wrong without it. Everything in this scene moves, so two captures
+/// are never of the same picture — the flow across the glass changes a third of
+/// its pixels in a few seconds. That makes any before-and-after comparison a
+/// comparison of two different moments, and a real change of a few percent
+/// vanishes underneath it. Worse, it produced a confident WRONG reading: adding
+/// light to the glass appeared to make it darker.
+///
+/// Page load timing varies too, so "capture both after 25 seconds" does not pin
+/// the clock either. This does. With `?t=` set, two builds render the identical
+/// frame and a pixel difference means exactly what it looks like.
+///
+/// The project's own rule was "never pixel-diff whole frames, the shader
+/// animates". This is how that rule stops applying. `?t=`.
+final double kFrozenTime = qDouble('t', -1);
+
 class WorldScene extends StatefulWidget {
   const WorldScene({required this.camera, super.key});
 
@@ -260,7 +278,11 @@ class _WorldSceneState extends State<WorldScene>
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
     _ticker = createTicker((elapsed) {
-      setState(() => _time = elapsed.inMicroseconds / 1e6);
+      setState(() {
+        _time = kFrozenTime >= 0
+            ? kFrozenTime
+            : elapsed.inMicroseconds / 1e6;
+      });
     });
     unawaited(_ticker.start());
   }
