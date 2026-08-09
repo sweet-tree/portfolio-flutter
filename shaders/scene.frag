@@ -96,6 +96,7 @@ uniform float uOff;
 //   2  the whole scene, reading those textures instead of tracing
 //   3  the LIGHT MAP: the cast shadow and contact darkening over the table
 //   4  the GALAXY BAND alone, at a fraction of the resolution
+//   5  the ENERGY on the surface, likewise
 //
 // ⚠️ THE CACHE HOLDS THE SHADING, NOT THE COVERAGE, and that is deliberate.
 // The coverage loop also produces the offset that tells the backdrop where in
@@ -117,6 +118,10 @@ uniform sampler2D uLightMap;
 /// everywhere, so it is rendered small and read back scaled up.
 uniform sampler2D uBandMap;
 
+/// The energy flowing over the glass. Cloud, with no edge of its own — the
+/// edges in that part of the frame all belong to the surface it lies on.
+uniform sampler2D uEnergyMap;
+
 out vec4 fragColor;
 
 /// ⚠️ STORED THROUGH A SQUARE ROOT, and read back through a square.
@@ -137,6 +142,15 @@ out vec4 fragColor;
 /// all and the answer is exactly 1, which is also what the analytic tests
 /// already concluded.
 const float kLightMapReach = 4.0;
+
+/// The energy's ceiling, for storing it in eight bits. It peaks near 2 where
+/// the flow is thickest — well past what a texture holds — so it is scaled down
+/// and square-rooted on the way in, and squared back on the way out. The square
+/// root matters: the field spends most of its range near zero, which is where
+/// linear storage would band.
+const float kEnergyMax = 2.5;
+vec3 encodeEnergy(vec3 v) { return sqrt(clamp(v / kEnergyMax, 0.0, 1.0)); }
+vec3 decodeEnergy(vec3 v) { return v * v * kEnergyMax; }
 
 vec3 encodeLayer(vec3 v) { return sqrt(clamp(v, 0.0, 1.0)); }
 vec3 decodeLayer(vec3 v) { return v * v; }
@@ -2238,6 +2252,13 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
         lightUv.y > 0.0 && lightUv.y < 1.0) {
       lit = texture(uLightMap, lightUv).rg;
     }
+    // ⚠️ READ, NOT COMPUTED — see uLayer 5. The flow is cloud: smooth over the
+    // whole surface, with no edge of its own anywhere in it. Every edge in this
+    // part of the frame belongs to the glass it lies on, and that is still
+    // resolved at full resolution here, so the softness has nothing to give it
+    // away.
+    vec3 energyHere = decodeEnergy(texture(uEnergyMap, uvScreen).rgb);
+
     float shadow = isOff(1.0) ? 1.0 : lit.r;
     float ao = isOff(2.0) ? 1.0 : lit.g;
 
@@ -2281,7 +2302,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
       vec3 cut = vec3(0.80, 0.86, 1.0) * 2.4 + kAccent * 0.35;
       vec3 surface = mix(transmitted, reflected + second, fres);
       surface *= mix(0.18, 1.0, shadow) * mix(0.25, 1.0, ao);
-      if (!isOff(4.0)) surface += surfaceEnergy(p, n) * (1.0 - fres);
+      if (!isOff(4.0)) surface += energyHere * (1.0 - fres);
       surface = mix(surface, cut, isCutEdge);
       return mix(background, surface, presence);
     }
@@ -2292,7 +2313,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     diagnostic += reflected * fres * 0.6;   // still shows the reflection
 
     // The energy: across the ledge, over the front edge, down the panel.
-    if (!isOff(4.0)) diagnostic += surfaceEnergy(p, n);
+    if (!isOff(4.0)) diagnostic += energyHere;
 
     // The cut edge glows: light travelling inside the sheet by total internal
     // reflection escapes where the glass is cut. Blended by how far the
@@ -2606,6 +2627,18 @@ void main() {
     );
     backdropRd = normalize(fwd * kFocal + right * uvB.x + up * uvB.y);
   }
+  // The energy pass, on the same fraction of the pixels as the band.
+  if (uLayer > 4.5) {
+    float t = tableTrace(kEye, rd);
+    vec3 e = vec3(0.0);
+    if (t > 0.0) {
+      vec3 ep = kEye + rd * t;
+      e = surfaceEnergy(ep, tableNormal(ep));
+    }
+    fragColor = vec4(encodeEnergy(e), 1.0);
+    return;
+  }
+
   // The band pass. Smooth everywhere, so it runs on a fraction of the pixels.
   if (uLayer > 3.5) {
     fragColor = bandOnly(rd);

@@ -144,6 +144,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _lightShader;
   /// A fourth, for the band — same reasoning again.
   ui.FragmentShader? _bandShader;
+  /// A fifth, for the energy — same reasoning again.
+  ui.FragmentShader? _energyShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -159,6 +161,7 @@ class _WorldSceneState extends State<WorldScene>
     _layerShader = Shaders.scene?.fragmentShader();
     _lightShader = Shaders.scene?.fragmentShader();
     _bandShader = Shaders.scene?.fragmentShader();
+    _energyShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -175,6 +178,7 @@ class _WorldSceneState extends State<WorldScene>
     _layerShader?.dispose();
     _lightShader?.dispose();
     _bandShader?.dispose();
+    _energyShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     super.dispose();
@@ -186,7 +190,9 @@ class _WorldSceneState extends State<WorldScene>
     final layerShader = _layerShader;
     final lightShader = _lightShader;
     final bandShader = _bandShader;
+    final energyShader = _energyShader;
     if (shader == null ||
+        energyShader == null ||
         layerShader == null ||
         lightShader == null ||
         bandShader == null) {
@@ -198,6 +204,7 @@ class _WorldSceneState extends State<WorldScene>
         layerShader: layerShader,
         lightShader: lightShader,
         bandShader: bandShader,
+        energyShader: energyShader,
         lightCache: _lightCache,
         time: _time,
         camera: widget.camera.position,
@@ -306,6 +313,7 @@ class _ScenePainter extends CustomPainter {
     required this.layerShader,
     required this.lightShader,
     required this.bandShader,
+    required this.energyShader,
     required this.lightCache,
     required this.time,
     required this.camera,
@@ -318,6 +326,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader layerShader;
   final ui.FragmentShader lightShader;
   final ui.FragmentShader bandShader;
+  final ui.FragmentShader energyShader;
   final double time;
   final double camera;
   final double velocity;
@@ -406,6 +415,33 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(25, layer);
     }
 
+    // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass
+    // reads it or not — an unbound one is undefined and can take the whole
+    // frame with it. The placeholder stands in wherever a real texture does not
+    // exist yet, which on the first frame is all of them.
+    void bind(ui.FragmentShader s, {ui.Image? band, ui.Image? energy}) {
+      final blank = cache.placeholder;
+      s
+        ..setImageSampler(0, cache.image ?? blank,
+            filterQuality: FilterQuality.low)
+        ..setImageSampler(1, lightCache.image ?? blank,
+            filterQuality: FilterQuality.low)
+        ..setImageSampler(2, band ?? blank, filterQuality: FilterQuality.low)
+        ..setImageSampler(3, energy ?? blank, filterQuality: FilterQuality.low);
+    }
+
+    /// Renders one of the small per-frame passes.
+    ui.Image renderSmall(ui.FragmentShader s, double layer, Size at) {
+      configure(s, layer, at);
+      bind(s);
+      final rec = ui.PictureRecorder();
+      Canvas(rec).drawRect(Offset.zero & at, Paint()..shader = s);
+      final pic = rec.endRecording();
+      final made = pic.toImageSync(at.width.toInt(), at.height.toInt());
+      pic.dispose();
+      return made;
+    }
+
     // ── The light map, baked only when the cube itself changes ──────────────
     //
     // Nothing about the camera reaches this: it is the shadow an object casts
@@ -419,13 +455,7 @@ class _ScenePainter extends CustomPainter {
         _LightCache.size.toDouble(),
       );
       configure(lightShader, 3, lightLow);
-      lightShader
-        ..setImageSampler(0, cache.image ?? cache.placeholder,
-            filterQuality: FilterQuality.low)
-        ..setImageSampler(1, lightCache.image ?? cache.placeholder,
-            filterQuality: FilterQuality.low)
-        ..setImageSampler(2, cache.placeholder,
-            filterQuality: FilterQuality.low);
+      bind(lightShader);
       final rec = ui.PictureRecorder();
       Canvas(rec)
           .drawRect(Offset.zero & lightLow, Paint()..shader = lightShader);
@@ -447,20 +477,8 @@ class _ScenePainter extends CustomPainter {
       (low.width * 0.25).roundToDouble(),
       (low.height * 0.25).roundToDouble(),
     );
-    configure(bandShader, 4, bandLow);
-    bandShader
-      ..setImageSampler(0, cache.image ?? cache.placeholder,
-          filterQuality: FilterQuality.low)
-      ..setImageSampler(1, lightCache.image ?? cache.placeholder,
-          filterQuality: FilterQuality.low)
-      ..setImageSampler(2, cache.placeholder, filterQuality: FilterQuality.low);
-    final bandRec = ui.PictureRecorder();
-    Canvas(bandRec)
-        .drawRect(Offset.zero & bandLow, Paint()..shader = bandShader);
-    final bandPic = bandRec.endRecording();
-    final bandImage =
-        bandPic.toImageSync(bandLow.width.toInt(), bandLow.height.toInt());
-    bandPic.dispose();
+    final bandImage = renderSmall(bandShader, 4, bandLow);
+    final energyImage = renderSmall(energyShader, 5, bandLow);
 
     // ── The cube's shading, redrawn only when something it depends on moves ──
     //
@@ -472,13 +490,7 @@ class _ScenePainter extends CustomPainter {
     final want = _CubeCache.signatureFor(low, camera);
     if (cache.signature != want || cache.image == null) {
       configure(layerShader, 1); // uLayer: the cube's shading alone
-      // Bound but unread — see _CubeCache.placeholder.
-      layerShader
-        ..setImageSampler(0, cache.image ?? cache.placeholder,
-            filterQuality: FilterQuality.low)
-        ..setImageSampler(1, lightCache.image!,
-            filterQuality: FilterQuality.low)
-        ..setImageSampler(2, bandImage, filterQuality: FilterQuality.low);
+      bind(layerShader, band: bandImage, energy: energyImage);
       final layerRecorder = ui.PictureRecorder();
       Canvas(layerRecorder)
           .drawRect(Offset.zero & low, Paint()..shader = layerShader);
@@ -496,11 +508,8 @@ class _ScenePainter extends CustomPainter {
     // ⚠️ ASKED FOR EXPLICITLY. Flutter hands an image to a shader with
     // nearest-neighbour sampling by default, which would put hard pixel steps
     // on the cube — the one surface in this scene that must not have them.
-    configure(shader, 2); // uLayer: read the cube and the light from textures
-    shader
-      ..setImageSampler(0, cache.image!, filterQuality: FilterQuality.low)
-      ..setImageSampler(1, lightCache.image!, filterQuality: FilterQuality.low)
-      ..setImageSampler(2, bandImage, filterQuality: FilterQuality.low);
+    configure(shader, 2); // uLayer: read everything cached from textures
+    bind(shader, band: bandImage, energy: energyImage);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
@@ -520,6 +529,7 @@ class _ScenePainter extends CustomPainter {
     image.dispose();
     picture.dispose();
     bandImage.dispose();
+    energyImage.dispose();
   }
 
   @override
