@@ -98,6 +98,8 @@ uniform float uOff;
 //   4  the GALAXY BAND alone, at a fraction of the resolution
 //   5  the ENERGY on the surface, likewise
 //   6  the cube's COVERAGE and the offset its edge hands the backdrop
+//   7  the cube's EMISSION POTENTIAL — how much the carving could put out,
+//      before the live flow decides how much of it actually is
 //
 // ⚠️ THE CACHE HOLDS THE SHADING, NOT THE COVERAGE, and that is deliberate.
 // The coverage loop also produces the offset that tells the backdrop where in
@@ -161,6 +163,11 @@ uniform sampler2D uCubeCover;
 /// cells side by side, `Di` then `Se`. Built from the site's own typeface before
 /// the first frame; see carving.dart for why it is distance and not coverage.
 uniform sampler2D uCarveMap;
+
+/// How much energy each pixel of the cube COULD emit — the static half of the
+/// carving's glow, cached with the shading. What is actually getting out right
+/// now is this times cubeEnergyFlow, computed live.
+uniform sampler2D uCubeEmit;
 
 out vec4 fragColor;
 
@@ -376,6 +383,17 @@ vec3 fieldColor(vec2 uv, float aspect, vec2 fragCoord) {
   return mix(col, kBase, smoothstep(0.42, 1.0, uv.y) * 0.72);
 }
 
+/// How far a copy of the energy travels before it is retired, and how long that
+/// takes.
+///
+/// ⚠️ SHARED BY THE FLOW ON THE GLASS AND THE FLOW INSIDE THE CUBE, and that is
+/// the point rather than tidiness. They are one substance: it wells up inside
+/// the object, escapes through the carving, and spreads across the sheet. If the
+/// two were given their own rates they would beat against each other, and the
+/// eye reads two things drifting at different speeds as two things.
+const float kCycleDistance = 1.15;
+const float kCyclePeriod = 5.0;
+
 /// One advected sample of the energy field.
 ///
 /// [advect] is how far the sample point has been slid outward along its own
@@ -454,10 +472,6 @@ vec3 surfaceEnergy(vec3 p, vec3 n) {
   vec2 fromCube = surf - cubeOnSurface();
   float travelled = length(fromCube);
   vec2 dir = travelled > 1e-4 ? fromCube / travelled : vec2(1.0, 0.0);
-
-  // How far a copy travels before it is retired, and how long that takes.
-  const float kCycleDistance = 1.15;
-  const float kCyclePeriod = 5.0;
 
   float phase = uTime / kCyclePeriod;
   float pa = fract(phase);
@@ -721,6 +735,69 @@ vec3 starsColor(vec3 dir) {
   // This is the only value in the shader chosen for looks that was touched by
   // that move; every other one is free to be re-tuned by eye.
   return c + vec3(0.02138, 0.02595, 0.03425);
+}
+
+/// How much energy is arriving at this point of the cube's surface, right now.
+///
+/// ⚠️ THIS IS THE SAME SUBSTANCE AS THE FLOW ON THE GLASS, not a separate effect
+/// tuned to resemble it. He looked at the first version — an even wash filling
+/// the letters — and said immediately that it was not the same energy. He was
+/// right, and the mismatch was not the colour, which was already identical: it
+/// was that one of them is a moving, turbulent cloud and the other was a flat
+/// fill. A flat area of colour and a churning one never read as one material
+/// however well the hue matches.
+///
+/// So this is the surface flow's own model, one dimension up. Same noise, same
+/// cycle length, same period, same flow-map advection — two copies half a cycle
+/// out of phase, cross-faded on a triangle weight so that no sample ever
+/// accumulates stretch. The energy wells up from the middle of the cube, travels
+/// OUTWARD along its own radius, escapes wherever the carving has thinned the
+/// stone, and then keeps going across the sheet. One story, told by one field.
+///
+/// ⚠️ SAMPLED IN THE CUBE'S OWN FRAME, so the turbulence belongs to the object.
+/// In world space it would swim across the faces the moment the cube moved.
+///
+/// ⚠️ AND IT NEVER REACHES ZERO. The flow on the glass is free to thin out to
+/// nothing, because nothing is written in it. These letters are, and a letter
+/// that blinks out is a letter nobody can read — so the modulation breathes
+/// between a floor and full rather than between off and on. That floor is the
+/// one place this deliberately departs from the field it comes from, and it is a
+/// legibility decision rather than a physical one.
+float cubeEnergyFlow(vec3 p) {
+  vec3 lp = spinInto() * (p - cubeOrigin()) / max(uCubeHalf, 1e-4);
+  vec3 dir = normalize(lp + vec3(1e-5));
+
+  float phase = uTime / kCyclePeriod;
+  float pa = fract(phase);
+  float pb = fract(phase + 0.5);
+
+  // ⚠️ TWO MOTIONS, AND THE FIRST VERSION HAD ONLY ONE — measured, not guessed.
+  // Two frames seven seconds apart changed 27% of the flow on the glass and
+  // 1.5% of the letters: the field was varying in SPACE but standing almost
+  // still in TIME.
+  //
+  // The reason is that radial advection alone cannot travel far here. On the
+  // glass the energy slides outward across a sheet twenty units wide; inside the
+  // cube everything is squeezed into the range -1 to 1, so the cross-fade only
+  // ever rocks the sample point back and forth across about a fifth of one
+  // feature. It looks like flow and is very nearly a still image.
+  //
+  // So a steady DRIFT is added on top. A uniform translation of the sampling
+  // domain moves every point by the same vector, which is exactly why it can run
+  // without limit and never shears — shearing comes from neighbours sliding
+  // differently, and here they do not. The radial term keeps the sense of the
+  // energy travelling outward; the drift is what makes it alive.
+  const float kScale = 2.1;
+  const float kDrift = 0.115;
+  vec3 wander = vec3(0.13, 1.0, -0.21) * (uTime * kDrift) + 3.1;
+  float a = fbm3Coarse(lp * kScale - dir * (pa * kCycleDistance) + wander);
+  float b = fbm3Coarse(lp * kScale - dir * (pb * kCycleDistance) + wander);
+  float f = mix(a, b, abs(1.0 - 2.0 * pa));
+
+  // fbm3Coarse runs 0 to 0.875 and sits around 0.44, so this window is roughly
+  // centred on the field rather than perched at one end of it — the mistake
+  // that made the first moss coverage a tenth of what it should have been.
+  return mix(0.34, 1.0, smoothstep(0.30, 0.66, f));
 }
 
 /// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
@@ -2369,9 +2446,23 @@ vec3 shadeCubeCoarse(vec3 p, vec3 n) {
 
 /// Intersects and shades the cube along one camera ray. Returns its colour
 /// and writes 1.0 to [hit].
-vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit);
+vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit, out vec3 emit);
 
-vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) {
+/// ⚠️ EMISSION COMES BACK SEPARATELY RATHER THAN ADDED IN, and that separation
+/// is the entire reason the carving can breathe without costing the frame rate.
+///
+/// Everything else about this cube is fixed: the stone, the growth, the light,
+/// where the letters are and how deep. That is why its picture can be drawn once
+/// and reused, which is what took the frame from 45 to 75. The energy leaving
+/// the carving is the one thing that MOVES — and folding it into the returned
+/// colour would make the whole picture time-varying, throwing all of that away
+/// to animate a few hundred pixels.
+///
+/// So the expensive, static answer is cached — how much energy this point COULD
+/// emit — and the cheap, moving answer is computed per frame and multiplied
+/// against it. See uLayer 7 and cubeEnergyFlow.
+vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod,
+               out vec3 emit) {
   // ⚠️ THE GEOMETRIC NORMAL, NOT THE BUMPED ONE, wherever the question is about
   // the SHAPE rather than the surface — how edge-on this face is to the camera.
   // Feeding those terms the bumpy normal turns detail finer than a pixel into
@@ -2473,19 +2564,21 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) 
   // not care, because it did not come from the world. Multiplying it by the
   // occlusion would darken the light exactly where the cut is deepest — which is
   // precisely where the most of it should be getting out.
-  return direct + ibl * s.occlusion + s.emission;
+  emit = s.emission;
+  return direct + ibl * s.occlusion;
 }
 
-vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit) {
+vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit, out vec3 emit) {
   vec3 n;
   vec2 t = cubeIntersect(kEye, rd, spin, n);
   if (t.x < 0.0) {
     hit = 0.0;
+    emit = vec3(0.0);
     return vec3(0.0);
   }
   hit = 1.0;
   // Convex: a single light cannot make it shadow itself.
-  return shadeCube(kEye + rd * t.x, n, -rd, 1.0, spin, lod);
+  return shadeCube(kEye + rd * t.x, n, -rd, 1.0, spin, lod, emit);
 }
 
 /// Everything EXCEPT the cube's own primary visibility: the background, and
@@ -2803,6 +2896,9 @@ void main() {
   }
 
   vec3 sum = vec3(0.0);
+  // How much energy this pixel COULD emit — cached, and multiplied per frame by
+  // the flow that is actually arriving. See uLayer 7.
+  vec3 emitSum = vec3(0.0);
   float cov = 0.0;
   // Where in the pixel the cube ISN'T — see the backdrop note above.
   vec2 openOffset = vec2(0.0);
@@ -2852,6 +2948,7 @@ void main() {
     vec4 cvg = texture(uCubeCover, fragCoord / uSize);
     cov = cvg.r;
     openOffset = (cvg.gb - 0.5) * kOffsetRange;
+    emitSum = decodeEnergy(texture(uCubeEmit, fragCoord / uSize).rgb);
   } else if (!isOff(64.0) &&
       (corners || abs(nearSurface) < px * 6.0 || edgeDist < px * 6.0)) {
     // 8x8 rotated grid with a Gaussian reconstruction filter.
@@ -2934,11 +3031,28 @@ void main() {
 
     // One material evaluation per face, at the average position of the samples
     // that landed on it, weighted back by how much of the pixel each face owns.
+    //
+    // ⚠️ THE EMISSION IS RESOLVED HERE TOO, at the same 64 samples and by the
+    // same weights. It is the sharpest thing on this object — a bright letter
+    // against dark stone — so resolving it any more coarsely than the shading
+    // would put a staircase on the one feature everybody looks at.
     vec3 acc = vec3(0.0);
-    if (wA > 0.0) acc += shadeCube(pA / wA, nA, -rd, 1.0, spin, px) * wA;
-    if (wB > 0.0) acc += shadeCube(pB / wB, nB, -rd, 1.0, spin, px) * wB;
-    if (wC > 0.0) acc += shadeCube(pC / wC, nC, -rd, 1.0, spin, px) * wC;
+    vec3 accEmit = vec3(0.0);
+    vec3 eA, eB, eC;
+    if (wA > 0.0) {
+      acc += shadeCube(pA / wA, nA, -rd, 1.0, spin, px, eA) * wA;
+      accEmit += eA * wA;
+    }
+    if (wB > 0.0) {
+      acc += shadeCube(pB / wB, nB, -rd, 1.0, spin, px, eB) * wB;
+      accEmit += eB * wB;
+    }
+    if (wC > 0.0) {
+      acc += shadeCube(pC / wC, nC, -rd, 1.0, spin, px, eC) * wC;
+      accEmit += eC * wC;
+    }
     sum = acc / max(hitWeight, 1e-5);
+    emitSum = accEmit / max(hitWeight, 1e-5);
     cov = hitWeight / max(weightSum, 1e-5);
     // No uncovered sliver at all means the backdrop is completely hidden, so
     // its value cannot matter; leave the ray at the centre.
@@ -2946,7 +3060,7 @@ void main() {
     else openOffset = vec2(0.0);
   } else {
     float hit;
-    sum = shadeCubeRay(rd, spin, px, hit);
+    sum = shadeCubeRay(rd, spin, px, hit, emitSum);
     cov = hit;
   }
 
@@ -2956,8 +3070,20 @@ void main() {
     fragColor = vec4(encodeLayer(sum), 1.0);
     return;
   }
-  if (uLayer > 5.5) {
+  // ⚠️ A RANGE, NOT A THRESHOLD. This was written as a bare "above 5.5" while
+  // there was only one layer up here, and adding a second silently gave the
+  // emission pass the coverage pass's output. A selector wants a range the
+  // moment there is more than one thing above the line.
+  if (uLayer > 5.5 && uLayer < 6.5) {
     fragColor = vec4(cov, openOffset / kOffsetRange + 0.5, 1.0);
+    return;
+  }
+  // The emission pass: how much energy each pixel COULD put out, before the flow
+  // decides how much actually is. Square-rooted like the other stored radiance,
+  // because it spends most of its range near zero and all of its interest at the
+  // bottom.
+  if (uLayer > 6.5) {
+    fragColor = vec4(encodeEnergy(emitSum), 1.0);
     return;
   }
 
@@ -3014,7 +3140,19 @@ void main() {
   );
 
   if (cov > 0.0) {
-    col = mix(col, sum, cov);
+    // ⚠️ THE ONE PART OF THE CUBE THAT IS COMPUTED EVERY FRAME, and it is three
+    // octaves of noise on a few thousand pixels rather than the thousand hash
+    // lookups the material costs. The surface point comes free: `tCube` was
+    // already resolved above for the coverage test, whichever branch ran.
+    //
+    // Everything static stays cached; only how much energy is arriving right
+    // now is live. That is the whole trade — the letters breathe with the same
+    // field that moves across the glass, and the frame rate does not notice.
+    vec3 emitted = emitSum;
+    if (tCube.x > 0.0 && emitSum != vec3(0.0)) {
+      emitted *= cubeEnergyFlow(kEye + rd * tCube.x);
+    }
+    col = mix(col, sum + emitted, cov);
   }
 
   // The flying energy sits in FRONT of everything solid here — the slab hangs

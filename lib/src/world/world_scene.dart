@@ -235,6 +235,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _energyShader;
   /// A sixth, for the cube's coverage — same reasoning again.
   ui.FragmentShader? _coverShader;
+  /// A seventh, for the carving's emission potential — same reasoning again.
+  ui.FragmentShader? _emitShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -253,6 +255,7 @@ class _WorldSceneState extends State<WorldScene>
     _bandShader = Shaders.scene?.fragmentShader();
     _energyShader = Shaders.scene?.fragmentShader();
     _coverShader = Shaders.scene?.fragmentShader();
+    _emitShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -271,6 +274,7 @@ class _WorldSceneState extends State<WorldScene>
     _bandShader?.dispose();
     _energyShader?.dispose();
     _coverShader?.dispose();
+    _emitShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     _bandCache.dispose();
@@ -285,7 +289,9 @@ class _WorldSceneState extends State<WorldScene>
     final bandShader = _bandShader;
     final energyShader = _energyShader;
     final coverShader = _coverShader;
+    final emitShader = _emitShader;
     if (shader == null ||
+        emitShader == null ||
         coverShader == null ||
         energyShader == null ||
         layerShader == null ||
@@ -301,6 +307,7 @@ class _WorldSceneState extends State<WorldScene>
         bandShader: bandShader,
         energyShader: energyShader,
         coverShader: coverShader,
+        emitShader: emitShader,
         lightCache: _lightCache,
         bandCache: _bandCache,
         time: _time,
@@ -333,6 +340,17 @@ class _CubeCache {
   /// shading and invalidated with it, because they answer the same question
   /// about the same fixed object.
   ui.Image? cover;
+
+  /// How much energy the carving COULD emit at each pixel — see uLayer 7.
+  ///
+  /// ⚠️ THE STATIC HALF OF A MOVING EFFECT, and splitting it out is what lets
+  /// the carving breathe without costing the frame rate. Where the letters are,
+  /// how deep the cut is, how much moss stands in the way: all fixed, all
+  /// expensive, all cached here. How much energy is arriving at this instant is
+  /// three octaves of noise, computed live in the scene pass and multiplied
+  /// against this. Folding the two together would make the whole cube
+  /// time-varying and throw away the caching that took the frame from 45 to 75.
+  ui.Image? emit;
   String? signature;
 
   /// ⚠️ A SAMPLER THAT IS DECLARED MUST BE BOUND, ALWAYS.
@@ -389,6 +407,8 @@ class _CubeCache {
     image = null;
     cover?.dispose();
     cover = null;
+    emit?.dispose();
+    emit = null;
     _placeholder?.dispose();
     _placeholder = null;
     signature = null;
@@ -503,6 +523,7 @@ class _ScenePainter extends CustomPainter {
     required this.bandShader,
     required this.energyShader,
     required this.coverShader,
+    required this.emitShader,
     required this.lightCache,
     required this.bandCache,
     required this.time,
@@ -518,6 +539,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader bandShader;
   final ui.FragmentShader energyShader;
   final ui.FragmentShader coverShader;
+  final ui.FragmentShader emitShader;
   final double time;
   final double camera;
   final double velocity;
@@ -643,6 +665,8 @@ class _ScenePainter extends CustomPainter {
         // nearest, the field would step, and the letter's edge would inherit
         // every one of those steps as a visible staircase.
         ..setImageSampler(5, Carving.map ?? blank,
+            filterQuality: FilterQuality.low)
+        ..setImageSampler(6, cache.emit ?? blank,
             filterQuality: FilterQuality.low);
     }
 
@@ -715,6 +739,7 @@ class _ScenePainter extends CustomPainter {
     final want = _CubeCache.signatureFor(low, camera);
     if (cache.signature != want ||
         cache.image == null ||
+        cache.emit == null ||
         cache.cover == null) {
       // Coverage first: the shading pass and the scene pass both read it.
       configure(coverShader, 6, low);
@@ -742,6 +767,27 @@ class _ScenePainter extends CustomPainter {
       // real allocation, and dropping the reference does not release it.
       cache.image?.dispose();
       cache.image = fresh;
+
+      // ⚠️ THE EMISSION POTENTIAL, IN ITS OWN PASS AND FOR A DIFFERENT REASON
+      // FROM THE OTHERS. The shading and the coverage are cached because they
+      // never change. This is cached because its EXPENSIVE half never changes —
+      // where the letters are, how deep the cut is, how much growth stands in
+      // the light's way. What moves is only how much energy is arriving, and
+      // that is three octaves of noise applied live in the scene pass.
+      //
+      // It costs a second full evaluation of the material at cache time — paid
+      // once on load, against a saving for the life of the page.
+      configure(emitShader, 7, low);
+      bind(emitShader, band: bandImage, energy: energyImage);
+      final emitRec = ui.PictureRecorder();
+      Canvas(emitRec).drawRect(Offset.zero & low, Paint()..shader = emitShader);
+      final emitPic = emitRec.endRecording();
+      final freshEmit =
+          emitPic.toImageSync(low.width.toInt(), low.height.toInt());
+      emitPic.dispose();
+      cache.emit?.dispose();
+      cache.emit = freshEmit;
+
       cache.signature = want;
     }
 
