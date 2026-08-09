@@ -7,6 +7,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/scheduler.dart';
@@ -45,6 +46,29 @@ const double kCubeY = 0.34;
 /// Clamped below 0.95, where the ledge ends in front; larger and the cube would
 /// hang over the edge. `?cube=`.
 double get kCubeHalf => qDouble('cube', 0.70).clamp(0.30, 0.90);
+
+/// The cube's resting pose, in DEGREES about the vertical axis.
+///
+/// ⚠️ A POSE, NOT A SPIN. Choosing where the object sits, not animating it.
+///
+/// It is a composition control: the camera stands about 55 degrees off the
+/// cube's axes, so an unturned cube presents its two visible faces at the same
+/// incidence. Turning it squares one face to the eye and lays the other down.
+/// Degrees rather than radians because that is what anyone has an opinion in.
+/// `?spin=`.
+double get kSpin => qDouble('spin', 0);
+
+/// The table's material: 0 the diagnostic grey, 1 real glass.
+///
+/// ⚠️ THE GREY IS A STAND-IN, NOT THE DESIGN. Real glass on a dark ground
+/// reflecting a dark object is very nearly invisible, and we could not tell
+/// whether that was the material being subtle or the plane never being hit. The
+/// opaque grey answered it and then stayed.
+///
+/// Turning glass on is a bigger change than a material: the contact shadow and
+/// the contact darkening both work by MULTIPLYING the surface, so an invisible
+/// surface takes the cube's grounding with it. `?glass=`.
+double get kGlass => qDouble('glass', 0);
 
 /// Cube size as a fraction of the viewport's shortest side.
 const double kCubeSize = 0.26;
@@ -214,7 +238,11 @@ class _ScenePainter extends CustomPainter {
       ..setFloat(17, kLichen)
       ..setFloat(18, kBlocks)
       // uCubeHalf — the cube's own world size. See kCubeHalf.
-      ..setFloat(19, kCubeHalf);
+      ..setFloat(19, kCubeHalf)
+      // uSpin — the cube's resting pose. See kSpin.
+      ..setFloat(20, kSpin * math.pi / 180.0)
+      // uGlass — the table's material. See kGlass.
+      ..setFloat(21, kGlass);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);

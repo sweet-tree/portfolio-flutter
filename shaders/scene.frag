@@ -70,6 +70,8 @@ uniform float uMoss;     // ?moss=  how much of the surface is growth
 uniform float uLichen;   // ?lich=  how much crust
 uniform float uBlocks;   // ?blocks= stones across one face
 uniform float uCubeHalf; // ?cube=   the cube's own size in the world
+uniform float uSpin;     // ?spin=   the cube's resting pose, in radians
+uniform float uGlass;    // ?glass=  0 the diagnostic surface, 1 real glass
 
 out vec4 fragColor;
 
@@ -807,6 +809,54 @@ float tableTrace(vec3 ro, vec3 rd) {
   // giving up.
   if (ro.y > 0.0 && rd.y >= 0.0) return -1.0;
   if (ro.y < -kDropDepth && rd.y <= 0.0) return -1.0;
+
+  // ⚠️ SOLVE THE FLAT PARTS, MARCH ONLY THE EDGES.
+  //
+  // This is a floor and a panel: two planes, joined by a rounded lip. Marching
+  // finds them by stepping toward the surface, and its worst case is a shallow,
+  // grazing view of a large flat thing — which is precisely this camera looking
+  // across this table. Nearly every pixel in the lower half of the frame was
+  // taking that worst case.
+  //
+  // Away from the edges the surface IS the plane, exactly, so the intersection
+  // is a single divide and the answer is not an approximation of the marched
+  // one — it is the same answer, found directly.
+  //
+  // ⚠️ THE MARGINS ARE WHAT MAKE IT SAFE. Within kRound of a boundary the
+  // surface curves, and within kFillet of the inner corner the smooth union
+  // pulls it away from both planes. Stay that far clear and the plane is the
+  // truth; come closer and fall back to marching. Being conservative here costs
+  // a few pixels of the old path and nothing else, so the margin is generous.
+  //
+  // The NORMAL is unaffected either way: it is taken from the field's gradient
+  // at the hit point, so a position found by division gets the same rounded
+  // normal a marched one would.
+  const float kFlatMargin = kRound + kFillet + 0.02;
+  float best = -1.0;
+
+  // The ledge's top face, y = 0.
+  if (rd.y < -1e-5 && ro.y > 0.0) {
+    float t = -ro.y / rd.y;
+    vec3 p = ro + rd * t;
+    if (abs(p.x) < kTableHalfX - kFlatMargin &&
+        p.z > kEdgeZ + kFlatMargin && p.z < kBackZ - kFlatMargin) {
+      best = t;
+    }
+  }
+
+  // The panel's front face, the one the statement stands against.
+  float dropZ = kEdgeZ - kSlab;
+  if (rd.z > 1e-5 && ro.z < dropZ) {
+    float t = (dropZ - ro.z) / rd.z;
+    vec3 p = ro + rd * t;
+    if (abs(p.x) < kTableHalfX - kFlatMargin &&
+        p.y < -kFlatMargin && p.y > -kDropDepth + kFlatMargin &&
+        (best < 0.0 || t < best)) {
+      best = t;
+    }
+  }
+
+  if (best > 0.0) return best;
 
   float t = 0.02;
   for (int i = 0; i < 96; i++) {
@@ -1691,6 +1741,36 @@ CubeSurface cubeSurfaceFiltered(vec3 p, vec3 n, vec3 v, float spin, float lod) {
   return cubeSurface(p, n, spin, lod, vt / vtl, aniso);
 }
 
+/// The cube as it appears in a REFLECTION: an average, not a surface.
+///
+/// ⚠️ THE FULL MATERIAL IS UNRESOLVABLE HERE, so computing it is pure waste.
+/// A reflection arrives multiplied by Fresnel — 4 to 10% looking down at a
+/// sheet — off a rough, dark surface, and lands on top of the energy, which is
+/// the brightest thing in the frame at exactly that spot. Nobody can pick out a
+/// lichen colony through that. Two full material evaluations per table pixel
+/// were being spent on it, one for the reflection and one for the ghost off the
+/// glass's back face.
+///
+/// What DOES survive is which FACE is being reflected: the faces differ in
+/// brightness, and that difference is what makes the reflection read as an
+/// object rather than a smudge. So the geometry stays exact and only the
+/// surface detail is replaced by its own average.
+///
+/// ⚠️ AND NO SHADOW RAYS. The caller used to trace sixteen of them to ask
+/// whether the cube shadows itself at this point. It cannot: it is convex, and
+/// one light cannot put a convex object in its own shadow. The direct path has
+/// always known this — shadeCubeRay passes 1.0 with that reasoning written
+/// beside it — while the reflection path rediscovered the same constant every
+/// frame, for every table pixel that could see the cube.
+vec3 shadeCubeCoarse(vec3 p, vec3 n) {
+  // The material's mean albedo: stone, growth and crust at their coverages.
+  const vec3 kAverage = vec3(0.093, 0.099, 0.076);
+  vec3 albedo = kAverage * uLevel;
+  vec3 l = normalize(kLightPos - p);
+  vec3 direct = albedo * (1.0 / 3.14159265) * max(dot(n, l), 0.0) * 3.4;
+  return direct + envColor(n) * albedo;
+}
+
 // ── Shading ─────────────────────────────────────────────────────────────────
 
 /// Intersects and shades the cube along one camera ray. Returns its colour
@@ -1891,12 +1971,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     vec3 nr;
     vec2 tr = cubeIntersect(p + n * 1e-3, rr, spin, nr);
     if (tr.x > 0.0) {
-      vec3 pr = p + n * 1e-3 + rr * tr.x;
-      float visr = lightVisibility(pr, nr, spin, rotation);
-      // The footprint of a reflected ray is not the footprint of a camera ray,
-      // but a reflection in a surface this rough is soft anyway; erring coarse
-      // is both cheaper and closer to right than erring sharp.
-      reflected = shadeCube(pr, nr, -rr, visr, spin, cubeLod() * 2.0);
+      reflected = shadeCubeCoarse(p + n * 1e-3 + rr * tr.x, nr);
     } else {
       reflected = envColor(rr) * 0.25;
     }
@@ -1917,8 +1992,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     vec2 tr2 = cubeIntersect(p2 + n * 1e-3, rr2, spin, nr2);
     vec3 second = vec3(0.0);
     if (tr2.x > 0.0) {
-      vec3 pr2 = p2 + n * 1e-3 + rr2 * tr2.x;
-      second = shadeCube(pr2, nr2, -rr2, 1.0, spin, cubeLod() * 2.0) * 0.35;
+      second = shadeCubeCoarse(p2 + n * 1e-3 + rr2 * tr2.x, nr2) * 0.35;
     }
 
     // Traced, not tuned: how much of the light and of the sky this point can
@@ -1936,6 +2010,40 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     // The cut edge glows: light that has been travelling inside the sheet by
     // total internal reflection escapes where the glass is cut. On a real
     // glass table this is by far the brightest part of it.
+
+    // ── THE GLASS MATERIAL — no longer parked, switched with `?glass=1` ──────
+    //
+    // ⚠️ RESTORED VERBATIM FROM THE COMMENT IT SAT IN, deliberately unimproved.
+    // The point of turning it on is to see WHAT IT WAS, so nothing here has
+    // been tidied, rebalanced or corrected on the way back in.
+    //
+    // ENERGY CONSERVING: reflect OR transmit, never both added. `fres` is ~4%
+    // looking straight down at the sheet and rises to 1 at grazing, so most of
+    // what you see through it is the transmitted background. The shadow darkens
+    // what passes through; the occlusion darkens the ambient part. The energy
+    // moves INSIDE the composite rather than being painted on top, because
+    // light inside the sheet is transmitted.
+    //
+    // ⚠️ EXPECT IT TO BE NEARLY INVISIBLE. That is what clean glass on a dark
+    // ground with a dark object does, and it is the whole reason the diagnostic
+    // below exists — we could not tell whether the surface was subtle or simply
+    // never being hit. What makes it readable is the cut edge, the energy, and
+    // eventually some dirt.
+    //
+    // ⚠️ AND ONE KNOWN INCONSISTENCY, LEFT IN ON PURPOSE. `transmitted` samples
+    // the background FIELD, which `uSky` currently switches off — so the glass
+    // shows a cloudy sky that is not drawn anywhere above it. Physically it
+    // should transmit what is actually behind: flat dark, and stars past the
+    // far edge. Fixing that changes what you are judging, so it waits until
+    // after the first look.
+    if (uGlass > 0.5) {
+      vec3 cut = vec3(0.80, 0.86, 1.0) * 2.4 + kAccent * 0.35;
+      vec3 surface = mix(transmitted, reflected + second, fres);
+      surface *= mix(0.18, 1.0, shadow) * mix(0.25, 1.0, ao);
+      surface += surfaceEnergy(p, n) * (1.0 - fres);
+      surface = mix(surface, cut, isCutEdge);
+      return mix(background, surface, presence);
+    }
 
     vec3 diagnostic = vec3(0.52, 0.53, 0.58);
     diagnostic *= mix(0.06, 1.0, shadow);   // the cast shadow
@@ -2023,7 +2131,23 @@ void main() {
   // UNROTATED cube already presents both of its visible faces at the same
   // incidence. Spinning it 0.66 turned one face nearly head-on and the other
   // almost edge-on — the opposite of the intent.
-  float spin = 0.0;
+  // ⚠️ A RESTING POSE, NOT A ROTATION. It was fixed at 0 because a moving cube
+  // made the edges impossible to judge; the edges are settled now, so the pose
+  // is worth choosing rather than inheriting.
+  //
+  // It changes the COMPOSITION, not just the object: the camera sits about 55
+  // degrees off the cube's axes, so an unturned cube happens to present its two
+  // visible faces at the same incidence. Turning it makes one face squarer to
+  // the eye and the other more edge-on, which is a real design choice and the
+  // reason this is worth a knob rather than a guess.
+  //
+  // Everything follows it already — the ray intersection, the shadow, the
+  // occlusion, the antialiasing tests, and the material, which is sampled in
+  // the cube's own frame so the masonry turns WITH the stone instead of sliding
+  // across it. Where the moss grows and which way the water ran are measured
+  // against the WORLD, which is correct for a pose: the cube has been sitting
+  // like this, so up is up. That would need revisiting only if it ever moved.
+  float spin = uSpin;
   float rotation = ign(fragCoord) * 6.28318530718;
 
   // ⚠️ THE BACKDROP IS TRACED AFTER THE CUBE'S COVERAGE, NOT BEFORE.
