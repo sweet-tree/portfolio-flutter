@@ -129,8 +129,20 @@ class WorldScene extends StatefulWidget {
 class _WorldSceneState extends State<WorldScene>
     with SingleTickerProviderStateMixin {
   ui.FragmentShader? _shader;
+  /// ⚠️ A SECOND, SEPARATE SHADER INSTANCE FOR THE LAYER PASS.
+  ///
+  /// A FragmentShader carries its uniforms in a buffer that is read when the
+  /// picture is RASTERISED, not when it is recorded — and `toImageSync` does
+  /// not promise to rasterise before it returns. So recording the layer pass,
+  /// then setting the uniforms for the scene pass on the same object, let the
+  /// layer be drawn with the scene's values: it sampled the empty placeholder
+  /// and stored black. The cube came out perfectly shaped and perfectly black.
+  ///
+  /// One shader per pass, and the two can never tread on each other.
+  ui.FragmentShader? _layerShader;
   late final Ticker _ticker;
   double _time = 0;
+  final _CubeCache _cubeCache = _CubeCache();
 
   @override
   void initState() {
@@ -139,6 +151,7 @@ class _WorldSceneState extends State<WorldScene>
     // [Shaders] — so the scene is drawn properly from the very first frame
     // instead of showing flat background until an await completed.
     _shader = Shaders.scene?.fragmentShader();
+    _layerShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -152,37 +165,109 @@ class _WorldSceneState extends State<WorldScene>
   void dispose() {
     _ticker.dispose();
     _shader?.dispose();
+    _layerShader?.dispose();
+    _cubeCache.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final shader = _shader;
-    if (shader == null) return const ColoredBox(color: Palette.bg);
+    final layerShader = _layerShader;
+    if (shader == null || layerShader == null) {
+      return const ColoredBox(color: Palette.bg);
+    }
     return CustomPaint(
       painter: _ScenePainter(
         shader: shader,
+        layerShader: layerShader,
         time: _time,
         camera: widget.camera.position,
         velocity: widget.camera.velocity,
+        cache: _cubeCache,
       ),
       size: Size.infinite,
     );
   }
 }
 
+/// The cube's shading, drawn once and kept.
+///
+/// ⚠️ NOTHING ABOUT THE CUBE CHANGES BETWEEN FRAMES. The camera is fixed, the
+/// light is fixed, the pose and size are constants, and the material has no
+/// notion of time. Its picture is therefore identical every frame, and it was
+/// being recomputed sixty times a second — measured at 8.8 ms of a 41.7 ms
+/// frame, the largest single item in the scene.
+///
+/// ⚠️ THE FAILURE MODE IS A STALE CUBE, so the signature below is the whole
+/// safety argument: it lists EVERY input the cube's shading depends on, and any
+/// change to any of them throws the picture away. Miss one and the cube quietly
+/// stops responding to it. That is why the material knobs are in here even
+/// though they only ever arrive from the URL — a value that cannot change today
+/// is one refactor away from changing tomorrow.
+class _CubeCache {
+  ui.Image? image;
+  String? signature;
+
+  /// ⚠️ A SAMPLER THAT IS DECLARED MUST BE BOUND, ALWAYS.
+  ///
+  /// The shader declares the cube layer whichever pass is running, and the very
+  /// first pass is the one that DRAWS that layer — so at that moment there is
+  /// nothing to bind. Leaving it unbound is undefined: some backends read
+  /// garbage, some fail the draw outright, and the whole frame goes with it.
+  ///
+  /// So there is always something bound, even if it is one black pixel that the
+  /// layer pass never reads.
+  ui.Image? _placeholder;
+
+  ui.Image get placeholder {
+    final existing = _placeholder;
+    if (existing != null) return existing;
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder).drawRect(
+      const Rect.fromLTWH(0, 0, 1, 1),
+      Paint()..color = const Color(0xFF000000),
+    );
+    final picture = recorder.endRecording();
+    final made = picture.toImageSync(1, 1);
+    picture.dispose();
+    _placeholder = made;
+    return made;
+  }
+
+  /// Everything the cube's shading depends on. `time` is deliberately absent:
+  /// that is the entire reason this works.
+  static String signatureFor(Size low, double camera) => [
+    low.width, low.height, camera,
+    kCubeSize, kCubeHalf, kSpin, kMaterial, kLevel, kFuzz, kMoss, kLichen,
+    kBlocks, kGlass, qDouble('off', 0),
+  ].join(',');
+
+  void dispose() {
+    image?.dispose();
+    image = null;
+    _placeholder?.dispose();
+    _placeholder = null;
+    signature = null;
+  }
+}
+
 class _ScenePainter extends CustomPainter {
   const _ScenePainter({
     required this.shader,
+    required this.layerShader,
     required this.time,
     required this.camera,
     required this.velocity,
+    required this.cache,
   });
 
   final ui.FragmentShader shader;
+  final ui.FragmentShader layerShader;
   final double time;
   final double camera;
   final double velocity;
+  final _CubeCache cache;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -214,47 +299,83 @@ class _ScenePainter extends CustomPainter {
     final cubeY = low.height * kCubeY;
     final unit = low.shortestSide * kCubeSize;
 
-    // Flat indices in declaration order from the .frag.
-    shader
-      ..setFloat(0, low.width)
-      ..setFloat(1, low.height)
-      ..setFloat(2, time)
-      ..setFloat(3, camera)
-      ..setFloat(4, velocity)
-      ..setFloat(5, cubeX)
-      ..setFloat(6, cubeY)
-      ..setFloat(7, unit)
-      // Indices follow scene.frag's declaration order, including uniforms
-      // that are currently unused — the layout keeps them, so deleting one
-      // silently shifts every index after it.
-      ..setFloat(8, 0)   // uCubeGlow
-      ..setFloat(9, 1)   // uSurface
-      ..setFloat(10, 0)  // uSky — off; the shader is still compiled in
-      ..setFloat(11, 1)  // uStars — space beyond the table
-      // uClouds — the flying volumetric energy. OFF. Measured at ~60% of the
-      // frame (75 FPS without it against 30 with). The surface energy is
-      // unaffected: the waterfall over the glass edge lives in the surface
-      // shading, not in the volumetric.
-      ..setFloat(12, 0)
-      // uMaterial — the cube's surface. `?mat=0` for the plain near-black cube.
-      ..setFloat(13, kMaterial)
-      ..setFloat(14, kLevel)
-      ..setFloat(15, kFuzz)
-      ..setFloat(16, kMoss)
-      ..setFloat(17, kLichen)
-      ..setFloat(18, kBlocks)
-      // uCubeHalf — the cube's own world size. See kCubeHalf.
-      ..setFloat(19, kCubeHalf)
-      // uSpin — the cube's resting pose. See kSpin.
-      ..setFloat(20, kSpin * math.pi / 180.0)
-      // uGlass — the table's material. See kGlass.
-      ..setFloat(21, kGlass)
-      // uSpinCS — the pose as (cos, sin), turned once here rather than a
-      // hundred times per pixel in the shader. See spinInto().
-      ..setFloat(22, math.cos(kSpin * math.pi / 180.0))
-      ..setFloat(23, math.sin(kSpin * math.pi / 180.0))
-      // uOff — TEMPORARY profiling switches. `?off=`. Remove with the shader's.
-      ..setFloat(24, qDouble('off', 0));
+    // Every uniform except the layer mode, which the caller supplies. Written
+    // once and applied to both shaders so the two passes cannot drift apart.
+    void configure(ui.FragmentShader s, double layer) {
+      // Flat indices in declaration order from the .frag.
+      s
+        ..setFloat(0, low.width)
+        ..setFloat(1, low.height)
+        ..setFloat(2, time)
+        ..setFloat(3, camera)
+        ..setFloat(4, velocity)
+        ..setFloat(5, cubeX)
+        ..setFloat(6, cubeY)
+        ..setFloat(7, unit)
+        // Indices follow scene.frag's declaration order, including uniforms
+        // that are currently unused — the layout keeps them, so deleting one
+        // silently shifts every index after it.
+        ..setFloat(8, 0)   // uCubeGlow
+        ..setFloat(9, 1)   // uSurface
+        ..setFloat(10, 0)  // uSky — off; the shader is still compiled in
+        ..setFloat(11, 1)  // uStars — space beyond the table
+        // uClouds — the flying volumetric energy. OFF. Measured at ~60% of the
+        // frame (75 FPS without it against 30 with). The surface energy is
+        // unaffected: the waterfall over the glass edge lives in the surface
+        // shading, not in the volumetric.
+        ..setFloat(12, 0)
+        // uMaterial — the cube's surface. `?mat=0` for the plain cube.
+        ..setFloat(13, kMaterial)
+        ..setFloat(14, kLevel)
+        ..setFloat(15, kFuzz)
+        ..setFloat(16, kMoss)
+        ..setFloat(17, kLichen)
+        ..setFloat(18, kBlocks)
+        ..setFloat(19, kCubeHalf)
+        ..setFloat(20, kSpin * math.pi / 180.0)
+        ..setFloat(21, kGlass)
+        // uSpinCS — the pose as (cos, sin), turned once here rather than a
+        // hundred times per pixel in the shader. See spinInto().
+        ..setFloat(22, math.cos(kSpin * math.pi / 180.0))
+        ..setFloat(23, math.sin(kSpin * math.pi / 180.0))
+        // uOff — TEMPORARY profiling switches. `?off=`. Remove with the
+        // shader's.
+        ..setFloat(24, qDouble('off', 0))
+        ..setFloat(25, layer);
+    }
+
+    // ── The cube's shading, redrawn only when something it depends on moves ──
+    //
+    // In production that means once, on load, and then never: the camera only
+    // moves while travelling between sections, which is a couple of seconds of
+    // a visit. During that motion the cube is redrawn every frame — correctly,
+    // because panning changes which rays strike it — and it is sliding off the
+    // screen anyway.
+    final want = _CubeCache.signatureFor(low, camera);
+    if (cache.signature != want || cache.image == null) {
+      configure(layerShader, 1); // uLayer: the cube's shading alone
+      // Bound but unread — see _CubeCache.placeholder.
+      layerShader.setImageSampler(0, cache.image ?? cache.placeholder,
+          filterQuality: FilterQuality.low);
+      final layerRecorder = ui.PictureRecorder();
+      Canvas(layerRecorder)
+          .drawRect(Offset.zero & low, Paint()..shader = layerShader);
+      final layerPicture = layerRecorder.endRecording();
+      final fresh =
+          layerPicture.toImageSync(low.width.toInt(), low.height.toInt());
+      layerPicture.dispose();
+      // Replace, then dispose the old one — an image held across frames is a
+      // real allocation, and dropping the reference does not release it.
+      cache.image?.dispose();
+      cache.image = fresh;
+      cache.signature = want;
+    }
+
+    // ⚠️ ASKED FOR EXPLICITLY. Flutter hands an image to a shader with
+    // nearest-neighbour sampling by default, which would put hard pixel steps
+    // on the cube — the one surface in this scene that must not have them.
+    configure(shader, 2); // uLayer: read the cube from the layer
+    shader.setImageSampler(0, cache.image!, filterQuality: FilterQuality.low);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);

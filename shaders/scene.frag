@@ -88,7 +88,38 @@ uniform vec2 uSpinCS;    // (cos, sin) of the pose — see spinInto()
 // Add them: ?off=3 drops both the shadow and the darkening.
 uniform float uOff;
 
+// ⚠️ WHICH LAYER THIS PASS IS DRAWING.
+//
+//   0  the whole scene, cube shaded inline — the original path, kept as the
+//      reference the cached path is checked against
+//   1  the cube's SHADING ONLY, into a texture to be reused
+//   2  the whole scene, reading that texture instead of shading the cube
+//
+// ⚠️ THE CACHE HOLDS THE SHADING, NOT THE COVERAGE, and that is deliberate.
+// The coverage loop also produces the offset that tells the backdrop where in
+// the pixel to sample — the fix for the bright line along the cube's foot — and
+// that offset has nowhere to live in four channels. Shading alone has no such
+// coupling, and it is 8.8 ms of the 12.
+//
+// It also means there is no alpha to carry, which sidesteps this project's
+// premultiplication trap and frees the channels to be used for precision.
+uniform float uLayer;
+
+uniform sampler2D uCubeLayer;
+
 out vec4 fragColor;
+
+/// ⚠️ STORED THROUGH A SQUARE ROOT, and read back through a square.
+///
+/// The layer is an ordinary 8-bit image, and the cube's radiance lives near the
+/// bottom of the range — a near-black stone lit dimly. Stored straight, one step
+/// of 8-bit is 1/255 of the WHOLE range, which lands as visible banding once
+/// the tone curve lifts the darks. A square root spends the codes where the
+/// values actually are: at a radiance of 0.01 the step is five times finer.
+///
+/// Exactly invertible, and cheap in both directions.
+vec3 encodeLayer(vec3 v) { return sqrt(clamp(v, 0.0, 1.0)); }
+vec3 decodeLayer(vec3 v) { return v * v; }
 
 // ── World ───────────────────────────────────────────────────────────────────
 
@@ -2438,11 +2469,15 @@ void main() {
 
     // One material evaluation per face, at the average position of the samples
     // that landed on it, weighted back by how much of the pixel each face owns.
-    vec3 acc = vec3(0.0);
-    if (wA > 0.0) acc += shadeCube(pA / wA, nA, -rd, 1.0, spin, px) * wA;
-    if (wB > 0.0) acc += shadeCube(pB / wB, nB, -rd, 1.0, spin, px) * wB;
-    if (wC > 0.0) acc += shadeCube(pC / wC, nC, -rd, 1.0, spin, px) * wC;
-    sum = acc / max(hitWeight, 1e-5);
+    if (uLayer > 1.5) {
+      sum = decodeLayer(texture(uCubeLayer, fragCoord / uSize).rgb);
+    } else {
+      vec3 acc = vec3(0.0);
+      if (wA > 0.0) acc += shadeCube(pA / wA, nA, -rd, 1.0, spin, px) * wA;
+      if (wB > 0.0) acc += shadeCube(pB / wB, nB, -rd, 1.0, spin, px) * wB;
+      if (wC > 0.0) acc += shadeCube(pC / wC, nC, -rd, 1.0, spin, px) * wC;
+      sum = acc / max(hitWeight, 1e-5);
+    }
     cov = hitWeight / max(weightSum, 1e-5);
     // No uncovered sliver at all means the backdrop is completely hidden, so
     // its value cannot matter; leave the ray at the centre.
@@ -2450,8 +2485,22 @@ void main() {
     else openOffset = vec2(0.0);
   } else {
     float hit;
-    sum = shadeCubeRay(rd, spin, px, hit);
+    if (uLayer > 1.5) {
+      vec3 nk;
+      vec2 tk = cubeIntersect(kEye, rd, spin, nk);
+      hit = tk.x > 0.0 ? 1.0 : 0.0;
+      sum = decodeLayer(texture(uCubeLayer, fragCoord / uSize).rgb);
+    } else {
+      sum = shadeCubeRay(rd, spin, px, hit);
+    }
     cov = hit;
+  }
+
+  // ⚠️ THE LAYER PASS STOPS HERE. Nothing behind the cube has been traced yet,
+  // so this costs only what the cube costs — which is the point.
+  if (uLayer > 0.5 && uLayer < 1.5) {
+    fragColor = vec4(encodeLayer(sum), 1.0);
+    return;
   }
 
   // The backdrop, traced along the ray through the uncovered part of the pixel.
