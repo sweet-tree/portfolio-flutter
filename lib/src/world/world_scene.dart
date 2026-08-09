@@ -146,6 +146,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _bandShader;
   /// A fifth, for the energy — same reasoning again.
   ui.FragmentShader? _energyShader;
+  /// A sixth, for the cube's coverage — same reasoning again.
+  ui.FragmentShader? _coverShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -162,6 +164,7 @@ class _WorldSceneState extends State<WorldScene>
     _lightShader = Shaders.scene?.fragmentShader();
     _bandShader = Shaders.scene?.fragmentShader();
     _energyShader = Shaders.scene?.fragmentShader();
+    _coverShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -179,6 +182,7 @@ class _WorldSceneState extends State<WorldScene>
     _lightShader?.dispose();
     _bandShader?.dispose();
     _energyShader?.dispose();
+    _coverShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     super.dispose();
@@ -191,7 +195,9 @@ class _WorldSceneState extends State<WorldScene>
     final lightShader = _lightShader;
     final bandShader = _bandShader;
     final energyShader = _energyShader;
+    final coverShader = _coverShader;
     if (shader == null ||
+        coverShader == null ||
         energyShader == null ||
         layerShader == null ||
         lightShader == null ||
@@ -205,6 +211,7 @@ class _WorldSceneState extends State<WorldScene>
         lightShader: lightShader,
         bandShader: bandShader,
         energyShader: energyShader,
+        coverShader: coverShader,
         lightCache: _lightCache,
         time: _time,
         camera: widget.camera.position,
@@ -232,6 +239,10 @@ class _WorldSceneState extends State<WorldScene>
 /// is one refactor away from changing tomorrow.
 class _CubeCache {
   ui.Image? image;
+  /// Coverage and the sub-pixel offset — see uLayer 6. Cached alongside the
+  /// shading and invalidated with it, because they answer the same question
+  /// about the same fixed object.
+  ui.Image? cover;
   String? signature;
 
   /// ⚠️ A SAMPLER THAT IS DECLARED MUST BE BOUND, ALWAYS.
@@ -271,6 +282,8 @@ class _CubeCache {
   void dispose() {
     image?.dispose();
     image = null;
+    cover?.dispose();
+    cover = null;
     _placeholder?.dispose();
     _placeholder = null;
     signature = null;
@@ -314,6 +327,7 @@ class _ScenePainter extends CustomPainter {
     required this.lightShader,
     required this.bandShader,
     required this.energyShader,
+    required this.coverShader,
     required this.lightCache,
     required this.time,
     required this.camera,
@@ -327,6 +341,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader lightShader;
   final ui.FragmentShader bandShader;
   final ui.FragmentShader energyShader;
+  final ui.FragmentShader coverShader;
   final double time;
   final double camera;
   final double velocity;
@@ -427,7 +442,13 @@ class _ScenePainter extends CustomPainter {
         ..setImageSampler(1, lightCache.image ?? blank,
             filterQuality: FilterQuality.low)
         ..setImageSampler(2, band ?? blank, filterQuality: FilterQuality.low)
-        ..setImageSampler(3, energy ?? blank, filterQuality: FilterQuality.low);
+        ..setImageSampler(3, energy ?? blank, filterQuality: FilterQuality.low)
+        // ⚠️ NEAREST, NOT SMOOTH. Coverage and the offset are per-pixel
+        // quantities on the same grid as the frame; interpolating them would
+        // smear the cube's edge across its neighbours, which is the one thing
+        // this whole layer exists to keep exact.
+        ..setImageSampler(4, cache.cover ?? blank,
+            filterQuality: FilterQuality.none);
     }
 
     /// Renders one of the small per-frame passes.
@@ -488,7 +509,22 @@ class _ScenePainter extends CustomPainter {
     // because panning changes which rays strike it — and it is sliding off the
     // screen anyway.
     final want = _CubeCache.signatureFor(low, camera);
-    if (cache.signature != want || cache.image == null) {
+    if (cache.signature != want ||
+        cache.image == null ||
+        cache.cover == null) {
+      // Coverage first: the shading pass and the scene pass both read it.
+      configure(coverShader, 6, low);
+      bind(coverShader, band: bandImage, energy: energyImage);
+      final coverRec = ui.PictureRecorder();
+      Canvas(coverRec)
+          .drawRect(Offset.zero & low, Paint()..shader = coverShader);
+      final coverPic = coverRec.endRecording();
+      final freshCover =
+          coverPic.toImageSync(low.width.toInt(), low.height.toInt());
+      coverPic.dispose();
+      cache.cover?.dispose();
+      cache.cover = freshCover;
+
       configure(layerShader, 1); // uLayer: the cube's shading alone
       bind(layerShader, band: bandImage, energy: energyImage);
       final layerRecorder = ui.PictureRecorder();

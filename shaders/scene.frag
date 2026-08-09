@@ -97,6 +97,7 @@ uniform float uOff;
 //   3  the LIGHT MAP: the cast shadow and contact darkening over the table
 //   4  the GALAXY BAND alone, at a fraction of the resolution
 //   5  the ENERGY on the surface, likewise
+//   6  the cube's COVERAGE and the offset its edge hands the backdrop
 //
 // ⚠️ THE CACHE HOLDS THE SHADING, NOT THE COVERAGE, and that is deliberate.
 // The coverage loop also produces the offset that tells the backdrop where in
@@ -121,6 +122,10 @@ uniform sampler2D uBandMap;
 /// The energy flowing over the glass. Cloud, with no edge of its own — the
 /// edges in that part of the frame all belong to the surface it lies on.
 uniform sampler2D uEnergyMap;
+
+/// How much of each pixel the cube covers, and where inside that pixel it does
+/// NOT — which is where the backdrop behind it must be sampled from.
+uniform sampler2D uCubeCover;
 
 out vec4 fragColor;
 
@@ -151,6 +156,9 @@ const float kLightMapReach = 4.0;
 const float kEnergyMax = 2.5;
 vec3 encodeEnergy(vec3 v) { return sqrt(clamp(v / kEnergyMax, 0.0, 1.0)); }
 vec3 decodeEnergy(vec3 v) { return v * v * kEnergyMax; }
+
+/// The sub-pixel offset, which is signed and never leaves the sample grid.
+const float kOffsetRange = 1.5;
 
 vec3 encodeLayer(vec3 v) { return sqrt(clamp(v, 0.0, 1.0)); }
 vec3 decodeLayer(vec3 v) { return v * v; }
@@ -2500,7 +2508,19 @@ void main() {
     }
   }
 
-  if (!isOff(64.0) &&
+  // ⚠️ THE WHOLE CUBE, READ RATHER THAN RESOLVED. Its shading, its coverage and
+  // the offset its edge hands the backdrop are all fixed for a given pose, size
+  // and camera — so the 64 ray tests an edge pixel used to cast are answered
+  // once and looked up. This is the branch the scene takes every frame.
+  // ⚠️ THE SCENE PASS ONLY. Written as a bare "above 1.5" it also caught the
+  // coverage pass, which then read the very texture it existed to fill — and
+  // the cube disappeared.
+  if (uLayer > 1.5 && uLayer < 2.5) {
+    sum = decodeLayer(texture(uCubeLayer, fragCoord / uSize).rgb);
+    vec4 cvg = texture(uCubeCover, fragCoord / uSize);
+    cov = cvg.r;
+    openOffset = (cvg.gb - 0.5) * kOffsetRange;
+  } else if (!isOff(64.0) &&
       (corners || abs(nearSurface) < px * 6.0 || edgeDist < px * 6.0)) {
     // 8x8 rotated grid with a Gaussian reconstruction filter.
     //
@@ -2582,15 +2602,11 @@ void main() {
 
     // One material evaluation per face, at the average position of the samples
     // that landed on it, weighted back by how much of the pixel each face owns.
-    if (uLayer > 1.5) {
-      sum = decodeLayer(texture(uCubeLayer, fragCoord / uSize).rgb);
-    } else {
-      vec3 acc = vec3(0.0);
-      if (wA > 0.0) acc += shadeCube(pA / wA, nA, -rd, 1.0, spin, px) * wA;
-      if (wB > 0.0) acc += shadeCube(pB / wB, nB, -rd, 1.0, spin, px) * wB;
-      if (wC > 0.0) acc += shadeCube(pC / wC, nC, -rd, 1.0, spin, px) * wC;
-      sum = acc / max(hitWeight, 1e-5);
-    }
+    vec3 acc = vec3(0.0);
+    if (wA > 0.0) acc += shadeCube(pA / wA, nA, -rd, 1.0, spin, px) * wA;
+    if (wB > 0.0) acc += shadeCube(pB / wB, nB, -rd, 1.0, spin, px) * wB;
+    if (wC > 0.0) acc += shadeCube(pC / wC, nC, -rd, 1.0, spin, px) * wC;
+    sum = acc / max(hitWeight, 1e-5);
     cov = hitWeight / max(weightSum, 1e-5);
     // No uncovered sliver at all means the backdrop is completely hidden, so
     // its value cannot matter; leave the ray at the centre.
@@ -2598,14 +2614,7 @@ void main() {
     else openOffset = vec2(0.0);
   } else {
     float hit;
-    if (uLayer > 1.5) {
-      vec3 nk;
-      vec2 tk = cubeIntersect(kEye, rd, spin, nk);
-      hit = tk.x > 0.0 ? 1.0 : 0.0;
-      sum = decodeLayer(texture(uCubeLayer, fragCoord / uSize).rgb);
-    } else {
-      sum = shadeCubeRay(rd, spin, px, hit);
-    }
+    sum = shadeCubeRay(rd, spin, px, hit);
     cov = hit;
   }
 
@@ -2613,6 +2622,10 @@ void main() {
   // so this costs only what the cube costs — which is the point.
   if (uLayer > 0.5 && uLayer < 1.5) {
     fragColor = vec4(encodeLayer(sum), 1.0);
+    return;
+  }
+  if (uLayer > 5.5) {
+    fragColor = vec4(cov, openOffset / kOffsetRange + 0.5, 1.0);
     return;
   }
 
