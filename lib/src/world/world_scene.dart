@@ -14,6 +14,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/query_params.dart';
+import 'package:portfolio/src/world/carving.dart';
 import 'package:portfolio/src/world/shaders.dart';
 import 'package:portfolio/src/world/world_camera.dart';
 
@@ -45,7 +46,32 @@ const double kCubeY = 0.34;
 ///
 /// Clamped below 0.95, where the ledge ends in front; larger and the cube would
 /// hang over the edge. `?cube=`.
-final double kCubeHalf = qDouble('cube', 0.70).clamp(0.30, 0.90);
+///
+/// 0.80 is his, chosen together with [kCubeZ] rather than on its own: standing
+/// the object further back shrinks it, so the two were settled as one
+/// composition — bigger stone, further away.
+final double kCubeHalf = qDouble('cube', 0.80).clamp(0.30, 0.90);
+
+/// How far back the cube sits from where it used to, in world units.
+///
+/// The cube stood at the world origin, which left **0.25 units of glass in
+/// front of it and 2.4 behind** — parked at the lip of a ledge with all of its
+/// room on the far side. This slides it into that room. Positive is away from
+/// the camera; 0 is exactly where it was.
+///
+/// ⚠️ FURTHER BACK IS ALSO SMALLER, because this is an honest camera rather
+/// than a composition trick. For further back AND as massive, pair it with
+/// `?cube=` — that is what having both is for.
+///
+/// The clamp keeps the object on the sheet at the largest cube the size knob
+/// allows: the ledge runs from -0.95 in front to 3.1 behind, so 1.8 plus a
+/// half width of 0.9 still lands clear of the back edge. `?depth=`.
+///
+/// 0.5 is his. With the 0.80 cube that puts the front face 0.65 units clear of
+/// the lip instead of 0.25 — the object standing ON the ledge rather than
+/// balanced at the end of it — while staying close enough that the statement
+/// below still sits in the light it takes its colour from.
+final double kCubeZ = qDouble('depth', 0.5).clamp(0.0, 1.8);
 
 /// The cube's resting pose, in DEGREES about the vertical axis.
 ///
@@ -111,6 +137,42 @@ final double kLevel = qDouble('lvl', 1).clamp(0.2, 3.0);
 final double kFuzz = qDouble('fuzz', 1).clamp(0.0, 4.0);
 final double kMoss = qDouble('moss', 1).clamp(0.0, 2.0);
 final double kLichen = qDouble('lich', 1).clamp(0.0, 2.0);
+
+/// How deep the carving is cut. 0 leaves the cube uncarved. `?carve=`.
+///
+/// ⚠️ THE CARVING IS CUT, NOT DRAWN, and this is the one number that says how
+/// much. Nothing anywhere paints a line: the shader lowers the surface, and the
+/// material treats a low place the way it already treats a masonry joint —
+/// water gathers, moss grows, lichen stays away, and the pattern appears
+/// because something grew in it. Same mechanism that makes the blocks legible
+/// without a single joint being drawn.
+///
+/// So this knob is really "how much water does the pattern hold", and 0 is a
+/// genuine A/B rather than a disabled feature.
+final double kCarve = qDouble('carve', 1).clamp(0.0, 2.0);
+
+/// How much of a face the carved symbol spans, from its centre out. `?glyph=`.
+///
+/// 1 puts the symbol's cell exactly on the face's edges — the letters sit well
+/// inside that, because a glyph does not fill its own box. Past about
+/// 1.5 they start running into the cube's corners, where the masonry's own
+/// chamfer is, so the clamp is generous rather than tight and the judgement
+/// stays his.
+final double kGlyphSize = qDouble('glyph', 1.1).clamp(0.3, 2.0);
+
+/// How much energy escapes through the carving. `?emit=`.
+///
+/// ⚠️ THIS IS WHAT THE CARVING IS FOR. The letters are not a groove that
+/// happens to catch the light — they are the CHANNEL the cube's energy leaves
+/// through, which is also the answer to why this object glows at all. A solid
+/// glowing generally is a lamp; a solid glowing along a carved pattern is an
+/// artifact doing something.
+///
+/// It takes the same colour as the flow across the glass, from the same
+/// constant, because it is the same substance: the cube is the source and the
+/// surface carries it outward. Tuned apart they would drift into two effects
+/// that merely sit next to each other.
+final double kEmit = qDouble('emit', 1).clamp(0.0, 4.0);
 
 /// Stones across one face.
 ///
@@ -307,8 +369,14 @@ class _CubeCache {
   /// into a string sixty times a second was pure waste. The per-frame part
   /// below is the part that can actually vary.
   static final String _knobs = [
-    kCubeSize, kCubeHalf, kSpin, kMaterial, kLevel, kFuzz, kMoss, kLichen,
-    kBlocks, kGlass, kOff,
+    kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
+    kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kGlass, kOff,
+    // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
+    // before the first frame so this should always be true — but "should
+    // always" is the kind of assumption a cache key exists to not rely on. If
+    // the bake ever fails, the cube is cached uncarved and correctly stays that
+    // way rather than being half one thing and half the other.
+    Carving.map != null,
   ].join(',');
 
   /// Everything the cube's shading depends on. `time` is deliberately absent:
@@ -347,7 +415,10 @@ class _LightCache {
   /// texels across. Costs one megabyte, once.
   static const int size = 512;
 
-  static final String wanted = [kCubeHalf, kSpin, kOff].join(',');
+  /// ⚠️ kCubeZ BELONGS HERE, and it is the easy one to forget: the map's
+  /// CENTRE moved with the cube, not just its contents. Leave it out and
+  /// sliding the cube back keeps the old shadow, baked at the old place.
+  static final String wanted = [kCubeHalf, kCubeZ, kSpin, kOff].join(',');
 
   void dispose() {
     image?.dispose();
@@ -533,7 +604,14 @@ class _ScenePainter extends CustomPainter {
         // uOff — TEMPORARY profiling switches. `?off=`. Remove with the
         // shader's.
         ..setFloat(24, kOff)
-        ..setFloat(25, layer);
+        ..setFloat(25, layer)
+        // uCubeZ and uCarve — appended after uLayer, and new ones go on the
+        // END. Indices follow the .frag's declaration order, so inserting
+        // above shifts every value into the wrong slot, silently.
+        ..setFloat(26, kCubeZ)
+        ..setFloat(27, kCarve)
+        ..setFloat(28, kGlyphSize)
+        ..setFloat(29, kEmit);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass
@@ -558,7 +636,14 @@ class _ScenePainter extends CustomPainter {
             // names its filtering, and a reader comparing them would otherwise
             // have to know the default to see that this one differs on purpose.
             // ignore: avoid_redundant_argument_values
-            filterQuality: FilterQuality.none);
+            filterQuality: FilterQuality.none)
+        // ⚠️ SMOOTH, AND IT MATTERS MORE HERE THAN ANYWHERE. This one holds
+        // DISTANCES, and blending two distances gives a distance — which is the
+        // entire reason the letters can be stored as an image at all. Sampled
+        // nearest, the field would step, and the letter's edge would inherit
+        // every one of those steps as a visible staircase.
+        ..setImageSampler(5, Carving.map ?? blank,
+            filterQuality: FilterQuality.low);
     }
 
     /// Renders one of the small per-frame passes.

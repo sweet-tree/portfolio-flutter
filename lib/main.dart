@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/stats_overlay.dart';
+import 'package:portfolio/src/world/carving.dart';
 import 'package:portfolio/src/world/locations.dart';
 import 'package:portfolio/src/world/shaders.dart';
 import 'package:portfolio/src/world/type_glow.dart';
@@ -40,7 +41,11 @@ import 'package:portfolio/src/world/world_view.dart';
 ///      is the complete composition
 Future<void> main() async {
   final binding = WidgetsFlutterBinding.ensureInitialized();
-  await Shaders.load();
+  // ⚠️ BOTH AWAITED, AND THE CARVING FOR A SECOND REASON. A shader arriving
+  // late costs one plain frame; the carving arriving late is worse, because the
+  // cube's shading is cached on first paint and would then be kept UNCARVED
+  // until something else happened to invalidate it. See [Carving.bake].
+  await Future.wait<void>([Shaders.load(), Carving.bake()]);
   // ?bare=1 renders the scene alone, so there is no statement to wait for and
   // holding the frame would only stall on the watchdog.
   if (!bareScene) binding.deferFirstFrame();

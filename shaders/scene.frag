@@ -109,6 +109,36 @@ uniform float uOff;
 // premultiplication trap and frees the channels to be used for precision.
 uniform float uLayer;
 
+/// How far back along z the cube sits, in world units. `?depth=`.
+///
+/// ⚠️ DECLARED LAST OF THE FLOATS, and it has to stay that way. Indices follow
+/// declaration order, so putting this anywhere above `uLayer` would shift every
+/// index after it and every value would land in the wrong slot — silently.
+///
+/// The cube was at the world origin, which put its front face 0.25 units from
+/// the ledge's front edge and left 2.4 behind it. This slides it back into that
+/// room. Positive is away from the camera; 0 is where it always was.
+///
+/// ⚠️ EVERYTHING GEOMETRIC FOLLOWS IT FOR FREE because it goes through
+/// cubeOrigin() — the intersection, the shadow rays, the occlusion, the
+/// antialiasing corner tests and the material's own coordinate. The two things
+/// that did NOT follow are the energy's origin and the light map's centre, and
+/// both are handled explicitly below; look for uCubeZ at those sites.
+uniform float uCubeZ;
+
+/// How deep the carving is cut, as a multiplier. 0 is uncarved. `?carve=`.
+///
+/// ⚠️ ALSO DECLARED AFTER uLayer — see the note on uCubeZ. New float uniforms go
+/// at the END of this list, always.
+uniform float uCarve;
+
+/// How much of a face the symbol spans, from its centre out. `?glyph=`.
+uniform float uGlyph;
+
+/// How much energy escapes through the carving. 0 leaves it an unlit cut.
+/// `?emit=`.
+uniform float uEmit;
+
 uniform sampler2D uCubeLayer;
 
 /// The cast shadow and the contact darkening, baked over the table's surface.
@@ -126,6 +156,11 @@ uniform sampler2D uEnergyMap;
 /// How much of each pixel the cube covers, and where inside that pixel it does
 /// NOT — which is where the backdrop behind it must be sampled from.
 uniform sampler2D uCubeCover;
+
+/// The carved symbols, as a DISTANCE FIELD rather than a picture of them — two
+/// cells side by side, `Di` then `Se`. Built from the site's own typeface before
+/// the first frame; see carving.dart for why it is distance and not coverage.
+uniform sampler2D uCarveMap;
 
 out vec4 fragColor;
 
@@ -179,7 +214,15 @@ const float kRefHalf = 0.55;
 // stone on a table does and why the LAYOUT needs no changes: the statement is
 // held clear of the cube's base, and the base does not move.
 vec3 cubeHalf() { return vec3(uCubeHalf); }
-vec3 cubeOrigin() { return vec3(0.0, uCubeHalf, 0.0); }
+vec3 cubeOrigin() { return vec3(0.0, uCubeHalf, uCubeZ); }
+
+/// Where the cube stands on the SHEET, in the surface's own coordinate.
+///
+/// The sheet is unrolled flat by surfaceCoord — the ledge is (x, z) and the
+/// drop keeps walking in the same direction — so on the ledge the cube's place
+/// in it is simply its x and z. Both the energy and the light map need this,
+/// and they need the SAME answer, so there is one definition.
+vec2 cubeOnSurface() { return vec2(0.0, uCubeZ); }
 
 // Three-quarter camera, offset to the side. The straight-on version put the
 // ledge edge on a horizontal, which was geometrically what was asked for and
@@ -398,8 +441,19 @@ vec3 surfaceEnergy(vec3 p, vec3 n) {
   vec2 surf = sc.xy;
   float total = sc.z;
 
-  float travelled = length(surf);
-  vec2 dir = travelled > 1e-4 ? surf / travelled : vec2(1.0, 0.0);
+  // ⚠️ MEASURED FROM THE CUBE, NOT FROM THE WORLD ORIGIN.
+  //
+  // These were the same point until the cube gained a depth knob, and the
+  // distinction is the whole concept rather than a detail: the cube is the
+  // SOURCE. Left measuring from the origin, sliding the cube back would leave
+  // the glow where it was and the object would visibly stop emitting it.
+  //
+  // Only the DISTANCE and the DIRECTION move with it. The noise is still
+  // sampled in the sheet's own fixed coordinate, so the pattern stays welded to
+  // the glass instead of sliding across it when the cube moves.
+  vec2 fromCube = surf - cubeOnSurface();
+  float travelled = length(fromCube);
+  vec2 dir = travelled > 1e-4 ? fromCube / travelled : vec2(1.0, 0.0);
 
   // How far a copy travels before it is retired, and how long that takes.
   const float kCycleDistance = 1.15;
@@ -1496,6 +1550,7 @@ struct CubeSurface {
   float through;      // how much light passes THROUGH rather than off
   float fuzz;         // how much of this is a thicket rather than a solid
   vec3 f0;            // reflectance head-on
+  vec3 emission;      // light this surface MAKES — see the carving
 };
 
 /// Squashes a sample position along one direction, so a field sampled with it
@@ -1514,6 +1569,137 @@ struct CubeSurface {
 /// pixel, which is the entire goal.
 vec3 squashAlong(vec3 v, vec3 dir, float k) {
   return v - dir * dot(v, dir) * k;
+}
+
+// ── THE CARVING ─────────────────────────────────────────────────────────────
+//
+// ⚠️ IT IS CUT, NOT DRAWN. That is the whole decision, and everything here
+// follows from it. A painted line is a dark mark that stays put when you move;
+// a cut is a place where the surface is LOWER, and lower is a fact the rest of
+// the scene already knows what to do with. Shadow falls into it. The view slides
+// across it. Water sits in it, so growth fills it — which is the same mechanism
+// that already makes the masonry legible without a single joint being drawn.
+//
+// So this file gains no "carving colour" and no "carving shading". It gains a
+// DEPTH, and the material reads that depth the way it already reads a joint.
+//
+// ⚠️ THE SYMBOLS ALONE, WITH NO BOX AROUND THEM — his call, and it is the
+// better one. A ruled frame would have made this a diagram of an element tile;
+// two letters cut into stone let the periodic-table reading arrive on its own,
+// for anyone who takes it, without the object announcing it. The scientific
+// register belongs to the SITE reading the artifact, not to the artifact.
+//
+// (A rounded-rectangle frame was built here first and removed rather than left
+// switched off — a disabled feature is a thing the next reader has to work out
+// the status of.)
+
+/// How deep the cut is, as a fraction of the cube's half-width.
+///
+/// ⚠️ RELATIVE, NOT ABSOLUTE, so a bigger stone carries a proportionally deeper
+/// cut — the same object, larger. It works out around five times a masonry
+/// joint, which is the right order: a joint is a hairline between blocks, a
+/// carving is meant to be read from across a room.
+const float kCarveDepth = 0.030;
+
+/// The two coordinates of a face, given a position and normal in the cube's own
+/// frame. Normalised so the face runs -1 to 1 whatever size the cube is.
+vec2 carveFaceUv(vec3 lp, vec3 nl) {
+  vec3 a = abs(nl);
+  vec2 uv = a.x > 0.5 ? vec2(lp.z, lp.y)
+          : a.y > 0.5 ? vec2(lp.x, lp.z)
+                      : vec2(lp.x, lp.y);
+  return uv / uCubeHalf;
+}
+
+/// How the atlas was encoded — mirrors kCarveSpread and the cell size in
+/// carving.dart. In CELL PIXELS, which is why it is divided back out below.
+const float kGlyphSpread = 20.0;
+const float kGlyphCell = 256.0;
+const float kGlyphCells = 2.0;
+
+// How much of a face the symbol spans is `uGlyph` — `?glyph=`. It was a
+// constant here and became a knob the moment there was anything to judge it
+// against, which is the same reason every other number on this object has one.
+
+/// The symbol's signed distance, in the same units as the frame's.
+///
+/// ⚠️ WHICH SYMBOL DEPENDS ON WHICH FACE, and the sign of the normal has to come
+/// into it or half of them read backwards. The two faces at +x and -x look
+/// opposite ways, so a coordinate built from the same axis runs the other way on
+/// one of them — mirror writing, carved into a rock, which is not a look.
+///
+/// `Di` faces along x, `Se` along z: two symbols, four faces, and whichever pair
+/// the camera sees shows one of each rather than the same one twice.
+float glyphDist(vec2 uv, vec3 nl) {
+  // ⚠️ DERIVED FROM THE CAMERA'S OWN BASIS, NOT GUESSED — and guessing it got
+  // one axis backwards, which showed as `Se` carved in mirror writing while `Di`
+  // beside it read correctly.
+  //
+  // Screen right in this shader is `up × forward` (see main), and a viewer
+  // facing a face looks along -n. So the right-hand direction on a face is
+  // -(y × n), which works out to +z on the +x face and -x on the +z face —
+  // opposite signs for the two axes, which is exactly what a single combined
+  // test could not express.
+  float sx = abs(nl.x) > 0.5 ? sign(nl.x) : -sign(nl.z);
+  vec2 g = vec2(uv.x * sx, uv.y) / max(uGlyph, 1e-3);
+  // Past its own cell there is no symbol, and reporting a huge distance is both
+  // true and what stops the atlas's neighbour bleeding in at the seam.
+  if (abs(g.x) > 1.0 || abs(g.y) > 1.0) return 1e3;
+
+  float cell = abs(nl.x) > 0.5 ? 0.0 : 1.0;
+  // Into the atlas: y flips because an image runs downward and the face does
+  // not.
+  vec2 t = vec2(
+    (cell + (g.x * 0.5 + 0.5)) / kGlyphCells,
+    0.5 - g.y * 0.5
+  );
+  float d = texture(uCarveMap, t).r;
+  // Undo the encoding, then back out of cell pixels into face units.
+  float pixels = (d - 0.5) * 2.0 * kGlyphSpread;
+  // ⚠️ THE DISTANCE IS SCALED BY THE SAME FACTOR THE SHAPE WAS, and it has to
+  // be. A distance field is only a distance in the space it was measured in —
+  // stretch the shape and every distance in it stretches too. Skipping this
+  // would leave the letters the right size with the wrong-sized walls to their
+  // grooves, which is the kind of error that looks like a depth problem.
+  return pixels / (kGlyphCell * 0.5) * max(uGlyph, 1e-3);
+}
+
+/// The carving's signed distance on this face — negative inside the cut.
+///
+/// ⚠️ THE STROKE IS NEVER ALLOWED BELOW A PIXEL. Fine linework is the worst
+/// case in all of rendering: under a pixel wide a line stops being a line and
+/// becomes a flicker that crawls as the camera moves. So the cut widens rather
+/// than thins, exactly as the masonry's joints already do — and it matters more
+/// for a typeface than it did for them, because a letter has thin strokes by
+/// design and they are the first thing to go.
+///
+/// ⚠️ AND THE TOP AND BOTTOM ARE LEFT ALONE. A symbol belongs on the faces you
+/// read, and one lying on the floor of the cube would be carved into a surface
+/// nobody can see while still costing the march below.
+float carveDist(vec3 lp, vec3 nl, float lod) {
+  if (abs(nl.y) > 0.5 || uCarve < 1e-4) return 1e3;
+  // ⚠️ NOT NAMED `half` — that is a RESERVED WORD in GLSL, and the error it
+  // gives ("syntax error, unexpected end of file") points nowhere near the line
+  // it is on. The same trap already cost this project time once, over `patch`.
+  float halfW = lod / max(uCubeHalf, 1e-4) * 0.5;
+  // Widening the letter by half a pixel is invisible while the cube is large,
+  // and is what keeps the thin stroke of an `i` from breaking up when it is not.
+  return glyphDist(carveFaceUv(lp, nl), nl) - halfW;
+}
+
+/// How far below the face the cut reaches here, in WORLD units.
+///
+/// The profile is a trough with sloped walls rather than a square channel: real
+/// carving is made by a tool with an angle on it, and a vertical wall reads as
+/// stamped. The walls also give the light something to graze.
+float carveDepthAt(vec3 lp, vec3 nl, float lod) {
+  float d = carveDist(lp, nl, lod);
+  if (d > 0.0) return 0.0;
+  // The wall's run, in the same units as the distance. Wider than it is deep,
+  // which is what a chisel leaves.
+  const float kWall = 0.022;
+  float t = clamp(-d / kWall, 0.0, 1.0);
+  return kCarveDepth * uCubeHalf * uCarve * t;
 }
 
 /// [stretch] is the direction a pixel smears in, on the surface, and [aniso] is
@@ -1541,6 +1727,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
     plain.through = 0.0;
     plain.fuzz = 0.0;
     plain.f0 = vec3(0.10, 0.10, 0.115);
+    plain.emission = vec3(0.0);
     return plain;
   }
 
@@ -1570,8 +1757,46 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   //
   // The pixel footprint scales with it, or the detail fading would be measuring
   // against the wrong yardstick.
+  // ── The carving, before anything is scaled ───────────────────────────────
+  //
+  // ⚠️ COMPUTED IN WORLD PROPORTIONS, unlike everything below it. The material
+  // is normalised to a reference cube so a resize is a pure scale of the SAME
+  // stone; the carving is not that kind of thing. It is a mark made on THIS
+  // object, so it keeps its place on the face and its share of the surface at
+  // any size — which also means its depth and the pixel footprint it is band
+  // limited against are still in world units here. Below this line they are
+  // not, and using `lod` after the scaling would band limit the cut against the
+  // wrong yardstick.
+  vec3 lp = spinInto() * (p - cubeOrigin());
+  vec3 nl = spinInto() * n;
+  float carveD = carveDepthAt(lp, nl, lod);
+
+  // Its slope, by difference along the face's own two axes.
+  //
+  // Analytic would be possible — the rounded-rectangle distance has a closed
+  // form gradient — but it is fiddly to get right at the corners, and this
+  // function is cheap and is now paid once rather than every frame. Stepping by
+  // the pixel footprint means the slope is measured over what is actually
+  // visible, so the cut softens as the cube shrinks instead of turning into
+  // per-pixel noise. Same reasoning as the moss's slope below.
+  vec3 la = abs(nl);
+  vec3 ct1 = la.x > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+  vec3 ct2 = la.y > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+  vec3 carveSlope = vec3(0.0);
+  float carve = 0.0;
+  if (carveD > 0.0 || carveDist(lp, nl, lod) < 0.05) {
+    float ce = max(lod, 0.004);
+    float cd1 = carveDepthAt(lp + ct1 * ce, nl, lod);
+    float cd2 = carveDepthAt(lp + ct2 * ce, nl, lod);
+    // Into world space: the cut goes DOWN into the face, so the surface leans
+    // the way the depth increases.
+    carveSlope = spinOutOf() * (ct1 * (cd1 - carveD) + ct2 * (cd2 - carveD)) / ce;
+    // How far into the cut this is, 0 to 1 — the handle the material uses.
+    carve = clamp(carveD / max(kCarveDepth * uCubeHalf * uCarve, 1e-6), 0.0, 1.0);
+  }
+
   float mScale = kRefHalf / uCubeHalf;
-  vec3 q = spinInto() * (p - cubeOrigin()) * mScale;
+  vec3 q = lp * mScale;
   lod *= mScale;
 
   // ⚠️ THE MASONRY IS SAMPLED WITH `q`, EVERYTHING FINE WITH `qf`.
@@ -1741,6 +1966,19 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   float upward = clamp(n.y, 0.0, 1.0);
   // The runoff carries the growth down with it.
   float t = mix(0.500, 0.440, upward) - inJoint * 0.10 - streak * 0.055;
+  // ⚠️ AND THE CARVING IS A RECESS, SO IT IS TREATED AS ONE — no more, no less.
+  //
+  // This single term is what makes the cut readable, and nothing here draws it.
+  // A groove holds water for the same reason a joint does, so growth gathers in
+  // it, so the pattern appears. It is deeper than a joint, so it gets more: 0.16
+  // against the joint's 0.10.
+  //
+  // ⚠️ WHICH MEANS THE CARVING INHERITS EVERYTHING THE WALL ALREADY DOES, free
+  // and consistent. The line dips where it crosses a joint, because the joint is
+  // already lower. It picks up the runoff streaks. Its growth is the same
+  // organism at the same scale as the growth beside it. None of that is written
+  // anywhere — it falls out of the cut being a real depth rather than a mark.
+  t -= carve * 0.16;
   t -= (uMoss - 1.0) * 0.07;   // ?moss=
   float moss = smoothstep(t, t + 0.06, hf);
   // How close bare rock is to being overtaken. A clump standing proud throws a
@@ -1813,7 +2051,10 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   float bloom;
   float patchId;
   float crust = lichen(qf * kLichenScale, lod * kLichenScale, bloom, patchId);
-  crust *= (1.0 - moss) * bevel * uLichen;
+  // Crustose lichen wants dry, exposed, open rock — which a cut is the opposite
+  // of. Suppressed in the carving for the same reason it is suppressed in the
+  // joints, by the same kind of term.
+  crust *= (1.0 - moss) * bevel * uLichen * (1.0 - carve * 0.85);
 
   // Pale sage, and paler still at the growing edge, which is the newest and
   // thinnest part of the crust. Some colonies run yellow — a different species
@@ -1903,6 +2144,14 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   s.occlusion = mix(1.0, mix(0.62, 1.0, smoothstep(0.40, 0.56, h)), moss);
   // A joint sees almost nothing of the sky — it is a slot between two stones.
   s.occlusion *= mix(1.0, 0.60, inJoint);
+  // ⚠️ AND THE FLOOR OF A CUT SEES EVEN LESS. This is the term that makes the
+  // carving read in FLAT light, with no lamp on it at all — the same reason
+  // lettering on a gravestone is legible on an overcast day. Without it the cut
+  // only exists when something happens to be grazing across it.
+  s.occlusion *= mix(1.0, 0.52, carve);
+  // Water sits in it, and wet stone is darker — the streaks already prove the
+  // mechanism on the open faces.
+  s.albedo *= mix(1.0, 0.80, carve * (1.0 - moss));
   // Only the thin, newest growth at the tips passes light.
   s.through = moss * smoothstep(0.15, 0.85, tip);
 
@@ -1931,7 +2180,37 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   vec3 areoleSlope = (-areole.yzw) * (6.0 * a1 * (1.0 - a1) / fissureW) *
                      kAreoleScale * 0.0016 * crust;
 
-  vec3 slope = blockTilt + stoneSlope + areoleSlope +
+  // ── The energy, coming OUT of the carving ────────────────────────────────
+  //
+  // ⚠️ THIS IS WHAT THE CARVING IS FOR, and it reverses which way round the two
+  // things stand. The cut is not a groove that happens to be lit; it is the
+  // CHANNEL, and the letters are visible because the cube's energy leaves
+  // through them. That is also the answer to why this object glows at all — a
+  // solid that glows generally is a lamp, a solid that glows along a carved
+  // pattern is an artifact doing something.
+  //
+  // ⚠️ SAME SUBSTANCE AS THE FLOW ON THE GLASS, deliberately the same constant.
+  // The cube is the source and the surface carries it outward, so if these two
+  // were tuned separately they would drift into being two different effects that
+  // merely happen to sit next to each other.
+  vec3 emitTint = vec3(0.30, 0.58, 1.00) * 1.15 + kAccent * 0.12;
+
+  // Brightest at the FLOOR of the cut and falling off up its walls, because
+  // that is where the channel is deepest and the least stone is left over it.
+  // Squared, so the walls stay dark and the light reads as coming from inside
+  // rather than as a glowing outline painted around the letter.
+  float depthOut = carve * carve;
+
+  // ⚠️ AND IT COMES THROUGH THE MOSS RATHER THAN BEING BLOCKED BY IT. Growth
+  // sitting in the channel is lit from BEHIND — the one lighting condition that
+  // makes a leaf look like a leaf — so the light survives, dimmed, and picks up
+  // the green on its way out. Blocking it instead would make the moss read as
+  // paint over a lamp, and would waste the most interesting thing the two
+  // features do together.
+  vec3 through = mix(vec3(1.0), mossC * 9.0, moss * 0.85);
+  s.emission = emitTint * depthOut * uEmit * 1.6 * through;
+
+  vec3 slope = blockTilt + stoneSlope + areoleSlope + carveSlope +
                (grad / e) * mix(0.035, 0.150, moss);
   vec3 alongFace = slope - n * dot(slope, n);
   s.normal = normalize(n - alongFace);
@@ -1969,7 +2248,76 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
 /// in the direction that cannot be resolved, once. This function works out how
 /// much and which way; cubeSurface applies it to the fine fields and leaves the
 /// masonry alone.
+/// Walks the view ray down into the cut and returns where it REALLY lands.
+///
+/// ⚠️ THIS IS THE LINE BETWEEN A CUT AND A DRAWING, and it is worth being exact
+/// about what it buys. Tilting the normal alone — which the material already
+/// does — makes a groove that catches light correctly and is still, provably,
+/// flat: look along the face and the far wall of the channel does not hide its
+/// floor, because there is no channel. Here the ray actually travels down into
+/// the trough, so a shallow viewing angle slides the floor sideways and the near
+/// wall eats it, exactly as a real cut does.
+///
+/// It is also why moss inside the cut sits BELOW the surface rather than on it:
+/// the material is sampled at the point the ray truly reached.
+///
+/// ⚠️ A RAY THAT MEETS THE FLAT FACE STOPS THERE, and the early return is that
+/// fact rather than an optimisation. The carving only ever goes DOWN — nothing
+/// is added above the face — so a ray arriving outside the pattern has already
+/// hit the solid, and no amount of marching can change its answer. That is what
+/// keeps this cheap: it runs on the pattern's own pixels and nowhere else.
+///
+/// ⚠️ THE SILHOUETTE IS STILL A PLAIN BOX, and for this pattern that is not an
+/// approximation — the tile sits well inside its face and never reaches an edge,
+/// so there is no outline for it to notch. It becomes a real question only if
+/// the kené later runs off the sides, and the honest fix then is to trace the
+/// shell for grazing rays too, not to fake it.
+vec3 carveRelief(vec3 p, vec3 n, vec3 v, float lod) {
+  if (uCarve < 1e-4) return p;
+  vec3 nl = spinInto() * n;
+  if (abs(nl.y) > 0.5) return p;
+
+  vec3 lp = spinInto() * (p - cubeOrigin());
+  // Outside the cut the surface is the face, and the ray is already on it.
+  if (carveDepthAt(lp, nl, lod) <= 0.0) return p;
+
+  float nDotV = max(dot(n, v), 1e-3);
+  float maxD = kCarveDepth * uCubeHalf * uCarve;
+  // Travelling further than this cannot leave the trough, because nothing in it
+  // is deeper.
+  float sMax = maxD / nDotV;
+
+  // Marched in the CUBE'S OWN FRAME so the pose costs one matrix rather than one
+  // per step.
+  vec3 dirL = spinInto() * (-v);
+
+  const int kSteps = 16;
+  float prevS = 0.0;
+  float prevGap = carveDepthAt(lp, nl, lod);   // surface minus ray, at s = 0
+  float sHit = 0.0;
+  for (int i = 1; i <= kSteps; i++) {
+    float s = sMax * float(i) / float(kSteps);
+    float gap = carveDepthAt(lp + dirL * s, nl, lod) - s * nDotV;
+    if (gap <= 0.0) {
+      // Crossed between prevS and s. One linear solve on the two gaps lands
+      // within a fraction of a step of the true crossing, which is far below a
+      // pixel at this depth — a binary refinement here would be measuring
+      // something nothing can display.
+      float f = prevGap / max(prevGap - gap, 1e-6);
+      sHit = mix(prevS, s, clamp(f, 0.0, 1.0));
+      break;
+    }
+    prevS = s;
+    prevGap = gap;
+    sHit = s;
+  }
+  return p - v * sHit;
+}
+
 CubeSurface cubeSurfaceFiltered(vec3 p, vec3 n, vec3 v, float spin, float lod) {
+  // Down into the cut first — everything below is evaluated where the ray
+  // actually landed, not where it met the face's plane.
+  p = carveRelief(p, n, v, lod);
   float nDotVg = max(dot(n, v), 1e-4);
   // Capped at eight, the usual ceiling, so a face at the silhouette cannot ask
   // for an unbounded smear.
@@ -2119,7 +2467,13 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) 
 
   // Occlusion darkens only what arrives from everywhere — never the lamp. A
   // crease is hidden from the surroundings, not from a light it can see.
-  return direct + ibl * s.occlusion;
+  // ⚠️ EMISSION IS NOT OCCLUDED, and that is the whole difference between light
+  // a surface RECEIVES and light it MAKES. Everything above is dimmed by how
+  // much of the world this point can see; the energy leaving the channel does
+  // not care, because it did not come from the world. Multiplying it by the
+  // occlusion would darken the light exactly where the cut is deepest — which is
+  // precisely where the most of it should be getting out.
+  return direct + ibl * s.occlusion + s.emission;
 }
 
 vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit) {
@@ -2254,7 +2608,16 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     // sixty times a second. Baked once over the surface (see uLayer 3) and
     // sampled here. Outside the map the answer is exactly 1, which is what the
     // analytic bounds concluded anyway.
-    vec2 lightUv = surfaceCoord(p, n).xy / (2.0 * kLightMapReach) + 0.5;
+    // ⚠️ CENTRED ON THE CUBE, NOT ON THE ORIGIN. The map only covers where the
+    // answer is not 1, and what it covers is the shadow and the darkening —
+    // both of which belong to the cube and travel with it. Left centred on the
+    // origin, sliding the cube back would walk its shadow off the edge of the
+    // map, where the answer is hard-coded to "fully lit", and the shadow would
+    // simply stop in a straight line. Centring costs nothing and keeps every
+    // texel where the detail is.
+    vec2 lightUv =
+        (surfaceCoord(p, n).xy - cubeOnSurface()) / (2.0 * kLightMapReach)
+        + 0.5;
     vec2 lit = vec2(1.0);
     if (lightUv.x > 0.0 && lightUv.x < 1.0 &&
         lightUv.y > 0.0 && lightUv.y < 1.0) {
@@ -2633,7 +2996,11 @@ void main() {
   // near and starved where it is far. In surface space the resolution is even,
   // and the map is independent of the camera and the viewport entirely.
   if (uLayer > 2.5) {
-    vec2 surf = (uvScreen - 0.5) * (2.0 * kLightMapReach);
+    // The inverse of the lookup above — same centre, or the bake and the read
+    // would disagree about where a point is and the shadow would sit beside the
+    // object casting it.
+    vec2 surf =
+        (uvScreen - 0.5) * (2.0 * kLightMapReach) + cubeOnSurface();
     vec3 lp;
     vec3 ln;
     surfacePoint(surf, lp, ln);
