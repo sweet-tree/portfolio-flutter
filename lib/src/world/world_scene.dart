@@ -140,9 +140,12 @@ class _WorldSceneState extends State<WorldScene>
   ///
   /// One shader per pass, and the two can never tread on each other.
   ui.FragmentShader? _layerShader;
+  /// A third instance, for the light map — same reasoning as _layerShader.
+  ui.FragmentShader? _lightShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
+  final _LightCache _lightCache = _LightCache();
 
   @override
   void initState() {
@@ -152,6 +155,7 @@ class _WorldSceneState extends State<WorldScene>
     // instead of showing flat background until an await completed.
     _shader = Shaders.scene?.fragmentShader();
     _layerShader = Shaders.scene?.fragmentShader();
+    _lightShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -166,7 +170,9 @@ class _WorldSceneState extends State<WorldScene>
     _ticker.dispose();
     _shader?.dispose();
     _layerShader?.dispose();
+    _lightShader?.dispose();
     _cubeCache.dispose();
+    _lightCache.dispose();
     super.dispose();
   }
 
@@ -174,13 +180,16 @@ class _WorldSceneState extends State<WorldScene>
   Widget build(BuildContext context) {
     final shader = _shader;
     final layerShader = _layerShader;
-    if (shader == null || layerShader == null) {
+    final lightShader = _lightShader;
+    if (shader == null || layerShader == null || lightShader == null) {
       return const ColoredBox(color: Palette.bg);
     }
     return CustomPaint(
       painter: _ScenePainter(
         shader: shader,
         layerShader: layerShader,
+        lightShader: lightShader,
+        lightCache: _lightCache,
         time: _time,
         camera: widget.camera.position,
         velocity: widget.camera.velocity,
@@ -252,22 +261,57 @@ class _CubeCache {
   }
 }
 
+/// The cast shadow and the contact darkening, baked over the table's surface.
+///
+/// ⚠️ IT DEPENDS ON THE CUBE ALONE — not on the camera, not on the viewport,
+/// not on the window size. Fixed light, fixed occluder, fixed floor. So unlike
+/// the cube's layer, travelling does not invalidate this at all, and neither
+/// does resizing the browser.
+///
+/// Stored in the surface's own coordinate rather than on screen. The table
+/// stretches away from the camera, so a screen-shaped map would be dense where
+/// it is near and starved where it is far; in surface space the resolution is
+/// even everywhere it matters.
+class _LightCache {
+  ui.Image? image;
+  String? signature;
+
+  /// 512 over eight world units: about 64 texels per unit, and the sharpest
+  /// thing in it — the contact darkening right at the cube's foot — is a few
+  /// texels across. Costs one megabyte, once.
+  static const int size = 512;
+
+  static String signatureFor() =>
+      [kCubeHalf, kSpin, qDouble('off', 0)].join(',');
+
+  void dispose() {
+    image?.dispose();
+    image = null;
+    signature = null;
+  }
+}
+
 class _ScenePainter extends CustomPainter {
   const _ScenePainter({
     required this.shader,
     required this.layerShader,
+    required this.lightShader,
+    required this.lightCache,
     required this.time,
     required this.camera,
     required this.velocity,
     required this.cache,
   });
 
+
   final ui.FragmentShader shader;
   final ui.FragmentShader layerShader;
+  final ui.FragmentShader lightShader;
   final double time;
   final double camera;
   final double velocity;
   final _CubeCache cache;
+  final _LightCache lightCache;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -301,11 +345,12 @@ class _ScenePainter extends CustomPainter {
 
     // Every uniform except the layer mode, which the caller supplies. Written
     // once and applied to both shaders so the two passes cannot drift apart.
-    void configure(ui.FragmentShader s, double layer) {
+    void configure(ui.FragmentShader s, double layer, [Size? at]) {
+      final target = at ?? low;
       // Flat indices in declaration order from the .frag.
       s
-        ..setFloat(0, low.width)
-        ..setFloat(1, low.height)
+        ..setFloat(0, target.width)
+        ..setFloat(1, target.height)
         ..setFloat(2, time)
         ..setFloat(3, camera)
         ..setFloat(4, velocity)
@@ -344,6 +389,35 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(25, layer);
     }
 
+    // ── The light map, baked only when the cube itself changes ──────────────
+    //
+    // Nothing about the camera reaches this: it is the shadow an object casts
+    // on a floor under a fixed light, in the surface's own coordinates. So it
+    // survives travelling and window resizes untouched, and in practice is
+    // computed exactly once for the life of the page.
+    final wantLight = _LightCache.signatureFor();
+    if (lightCache.signature != wantLight || lightCache.image == null) {
+      final lightLow = Size(
+        _LightCache.size.toDouble(),
+        _LightCache.size.toDouble(),
+      );
+      configure(lightShader, 3, lightLow);
+      lightShader
+        ..setImageSampler(0, cache.image ?? cache.placeholder,
+            filterQuality: FilterQuality.low)
+        ..setImageSampler(1, lightCache.image ?? cache.placeholder,
+            filterQuality: FilterQuality.low);
+      final rec = ui.PictureRecorder();
+      Canvas(rec)
+          .drawRect(Offset.zero & lightLow, Paint()..shader = lightShader);
+      final pic = rec.endRecording();
+      final fresh = pic.toImageSync(_LightCache.size, _LightCache.size);
+      pic.dispose();
+      lightCache.image?.dispose();
+      lightCache.image = fresh;
+      lightCache.signature = wantLight;
+    }
+
     // ── The cube's shading, redrawn only when something it depends on moves ──
     //
     // In production that means once, on load, and then never: the camera only
@@ -355,8 +429,11 @@ class _ScenePainter extends CustomPainter {
     if (cache.signature != want || cache.image == null) {
       configure(layerShader, 1); // uLayer: the cube's shading alone
       // Bound but unread — see _CubeCache.placeholder.
-      layerShader.setImageSampler(0, cache.image ?? cache.placeholder,
-          filterQuality: FilterQuality.low);
+      layerShader
+        ..setImageSampler(0, cache.image ?? cache.placeholder,
+            filterQuality: FilterQuality.low)
+        ..setImageSampler(1, lightCache.image!,
+            filterQuality: FilterQuality.low);
       final layerRecorder = ui.PictureRecorder();
       Canvas(layerRecorder)
           .drawRect(Offset.zero & low, Paint()..shader = layerShader);
@@ -374,8 +451,10 @@ class _ScenePainter extends CustomPainter {
     // ⚠️ ASKED FOR EXPLICITLY. Flutter hands an image to a shader with
     // nearest-neighbour sampling by default, which would put hard pixel steps
     // on the cube — the one surface in this scene that must not have them.
-    configure(shader, 2); // uLayer: read the cube from the layer
-    shader.setImageSampler(0, cache.image!, filterQuality: FilterQuality.low);
+    configure(shader, 2); // uLayer: read the cube and the light from textures
+    shader
+      ..setImageSampler(0, cache.image!, filterQuality: FilterQuality.low)
+      ..setImageSampler(1, lightCache.image!, filterQuality: FilterQuality.low);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);

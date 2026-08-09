@@ -93,7 +93,8 @@ uniform float uOff;
 //   0  the whole scene, cube shaded inline — the original path, kept as the
 //      reference the cached path is checked against
 //   1  the cube's SHADING ONLY, into a texture to be reused
-//   2  the whole scene, reading that texture instead of shading the cube
+//   2  the whole scene, reading those textures instead of tracing
+//   3  the LIGHT MAP: the cast shadow and contact darkening over the table
 //
 // ⚠️ THE CACHE HOLDS THE SHADING, NOT THE COVERAGE, and that is deliberate.
 // The coverage loop also produces the offset that tells the backdrop where in
@@ -107,6 +108,10 @@ uniform float uLayer;
 
 uniform sampler2D uCubeLayer;
 
+/// The cast shadow and the contact darkening, baked over the table's surface.
+/// Red is how much of the light reaches a point, green how open it is.
+uniform sampler2D uLightMap;
+
 out vec4 fragColor;
 
 /// ⚠️ STORED THROUGH A SQUARE ROOT, and read back through a square.
@@ -118,6 +123,16 @@ out vec4 fragColor;
 /// values actually are: at a radiance of 0.01 the step is five times finer.
 ///
 /// Exactly invertible, and cheap in both directions.
+/// How far the light map reaches from the cube, in world units.
+///
+/// ⚠️ IT ONLY HAS TO COVER WHERE THE ANSWER IS NOT 1. The shadow of an object
+/// lit from above is contained — at the largest cube this reaches about 2.8
+/// units — and the contact darkening cannot reach past its own 2.2 plus the
+/// cube's radius. Four covers both with room. Beyond it the map is not read at
+/// all and the answer is exactly 1, which is also what the analytic tests
+/// already concluded.
+const float kLightMapReach = 4.0;
+
 vec3 encodeLayer(vec3 v) { return sqrt(clamp(v, 0.0, 1.0)); }
 vec3 decodeLayer(vec3 v) { return v * v; }
 
@@ -316,17 +331,45 @@ float energyLayer(vec2 surf, vec2 dir, float advect) {
 /// cross-faded: each is only ever slid up to half a cycle before a fresh one
 /// replaces it, and the weight is zero exactly when a copy resets. The result
 /// keeps moving outward but never accumulates stretch — it stays cloud.
-vec3 surfaceEnergy(vec3 p, vec3 n) {
-  // Unroll the step into one flat sheet. On the ledge that is just (x, z);
-  // past the front edge, falling by |y| keeps walking in the same direction,
-  // so the two agree exactly at the lip and the flow pours over.
+/// The step unrolled into one flat sheet, so the ledge and the panel share one
+/// coordinate. On the ledge it is simply (x, z); past the front edge, falling
+/// by |y| keeps walking in the same direction, so the two agree exactly at the
+/// lip and anything laid out in this space pours over it continuously.
+///
+/// ⚠️ SHARED, NOT COPIED. The energy flows in this space and the baked light
+/// map is stored in it. If the two ever disagreed about where a point is, the
+/// shadow would slide off the object casting it — so there is exactly one
+/// definition and both call it.
+///
+/// `w` returns how much surface there is at all: zero on the sheet's thin edge,
+/// where neither the top nor the front face applies.
+vec3 surfaceCoord(vec3 p, vec3 n) {
   vec2 onLedge = p.xz;
   vec2 onDrop = vec2(p.x, kEdgeZ - max(-p.y, 0.0));
 
   float wTop = clamp(n.y, 0.0, 1.0);
   float wDrop = clamp(-n.z, 0.0, 1.0);
   float total = max(wTop + wDrop, 1e-4);
-  vec2 surf = (onLedge * wTop + onDrop * wDrop) / total;
+  return vec3((onLedge * wTop + onDrop * wDrop) / total, total);
+}
+
+/// The inverse: a point and a normal on the sheet, from a place on it. Only
+/// exact on the two flat faces, which is all the light map needs — the rounded
+/// lip between them is a fraction of a texel wide.
+void surfacePoint(vec2 surf, out vec3 p, out vec3 n) {
+  if (surf.y >= kEdgeZ) {
+    p = vec3(surf.x, 0.0, surf.y);
+    n = vec3(0.0, 1.0, 0.0);
+  } else {
+    p = vec3(surf.x, surf.y - kEdgeZ, kEdgeZ - kSlab);
+    n = vec3(0.0, 0.0, -1.0);
+  }
+}
+
+vec3 surfaceEnergy(vec3 p, vec3 n) {
+  vec3 sc = surfaceCoord(p, n);
+  vec2 surf = sc.xy;
+  float total = sc.z;
 
   float travelled = length(surf);
   vec2 dir = travelled > 1e-4 ? surf / travelled : vec2(1.0, 0.0);
@@ -2146,8 +2189,19 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
 
     // Traced, not tuned: how much of the light and of the sky this point can
     // actually see with the cube in the way.
-    float shadow = isOff(1.0) ? 1.0 : lightVisibility(p, n, spin, rotation);
-    float ao = isOff(2.0) ? 1.0 : occlusion(p, n, spin, rotation);
+    // ⚠️ READ, NOT TRACED. Fixed light, fixed occluder, fixed floor — so this
+    // answer never changes, and it was being rediscovered by 28 rays per pixel
+    // sixty times a second. Baked once over the surface (see uLayer 3) and
+    // sampled here. Outside the map the answer is exactly 1, which is what the
+    // analytic bounds concluded anyway.
+    vec2 lightUv = surfaceCoord(p, n).xy / (2.0 * kLightMapReach) + 0.5;
+    vec2 lit = vec2(1.0);
+    if (lightUv.x > 0.0 && lightUv.x < 1.0 &&
+        lightUv.y > 0.0 && lightUv.y < 1.0) {
+      lit = texture(uLightMap, lightUv).rg;
+    }
+    float shadow = isOff(1.0) ? 1.0 : lit.r;
+    float ao = isOff(2.0) ? 1.0 : lit.g;
 
     // ⚠️ DIAGNOSTIC MATERIAL — an opaque light floor, not glass.
     //
@@ -2514,6 +2568,21 @@ void main() {
     );
     backdropRd = normalize(fwd * kFocal + right * uvB.x + up * uvB.y);
   }
+  // ⚠️ THE LIGHT MAP PASS. Every texel is a place on the table's surface rather
+  // than a place on the screen, which is the whole point: the table stretches
+  // away from the camera, so a screen-shaped cache would be dense where it is
+  // near and starved where it is far. In surface space the resolution is even,
+  // and the map is independent of the camera and the viewport entirely.
+  if (uLayer > 2.5) {
+    vec2 surf = (uvScreen - 0.5) * (2.0 * kLightMapReach);
+    vec3 lp;
+    vec3 ln;
+    surfacePoint(surf, lp, ln);
+    fragColor = vec4(lightVisibility(lp, ln, spin, rotation),
+                     occlusion(lp, ln, spin, rotation), 0.0, 1.0);
+    return;
+  }
+
   vec3 col = traceBackdrop(
     kEye, backdropRd, spin, fragCoord, uvScreen, aspect, rotation
   );
