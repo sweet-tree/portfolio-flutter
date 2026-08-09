@@ -63,7 +63,7 @@ const double kGlowKnee = 0;
 ///
 /// `?bloom=0` to switch it off — the fastest way to find out whether a
 /// softness or a blockiness around the letters is the spill or the type.
-double get kGlowBloom => qDouble('bloom', 0.0025).clamp(0, 0.05);
+final double kGlowBloom = qDouble('bloom', 0.0025).clamp(0, 0.05);
 
 /// How much of the spill is kept.
 ///
@@ -96,7 +96,7 @@ const double kGlowBloomStrength = 0.3;
 /// Overridable as `?cs=` so the cost of fixing it can be measured on a real
 /// phone rather than argued about — this is the one knob that took an iPhone
 /// 11 to 17 FPS, so it is not free.
-double get kColourScale => qDouble('cs', 0.4).clamp(0.1, 3.0);
+final double kColourScale = qDouble('cs', 0.4).clamp(0.1, 3.0);
 
 /// The bloom source is blurred immediately afterwards, so it can be coarser
 /// still. Resolution spent here is thrown away by the blur by definition.
@@ -109,7 +109,7 @@ double get kColourScale => qDouble('cs', 0.4).clamp(0.1, 3.0);
 /// at high weights first.
 ///
 /// `?bscale=` to test the cost of fixing it on a real device.
-double get kBloomScale => qDouble('bscale', 0.22).clamp(0.05, 2.0);
+final double kBloomScale = qDouble('bscale', 0.22).clamp(0.05, 2.0);
 
 /// The statement, rasterised once. Alpha is the glyph coverage — the real one,
 /// the only one — and there is no second rasterisation anywhere.

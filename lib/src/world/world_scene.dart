@@ -45,7 +45,7 @@ const double kCubeY = 0.34;
 ///
 /// Clamped below 0.95, where the ledge ends in front; larger and the cube would
 /// hang over the edge. `?cube=`.
-double get kCubeHalf => qDouble('cube', 0.70).clamp(0.30, 0.90);
+final double kCubeHalf = qDouble('cube', 0.70).clamp(0.30, 0.90);
 
 /// The cube's resting pose, in DEGREES about the vertical axis.
 ///
@@ -55,20 +55,35 @@ double get kCubeHalf => qDouble('cube', 0.70).clamp(0.30, 0.90);
 /// cube's axes, so an unturned cube presents its two visible faces at the same
 /// incidence. Turning it squares one face to the eye and lays the other down.
 /// Degrees rather than radians because that is what anyone has an opinion in.
-/// `?spin=`.
-double get kSpin => qDouble('spin', 0);
+///
+/// 75 is his choice, made on the running scene. It is close to a quarter turn,
+/// so it is very nearly the unturned pose again — but 15 degrees short of it,
+/// which is what keeps the two visible faces at clearly different incidences
+/// instead of the matched pair at 0 and the near-square face at 90. `?spin=`.
+final double kSpin = qDouble('spin', 75);
 
-/// The table's material: 0 the diagnostic grey, 1 real glass.
+/// The pose as (cos, sin), turned once here rather than once per pass.
+final double kSpinCos = math.cos(kSpin * math.pi / 180.0);
+final double kSpinSin = math.sin(kSpin * math.pi / 180.0);
+final double kSpinRadians = kSpin * math.pi / 180.0;
+
+/// The table's material: 1 real glass, 0 the diagnostic grey.
 ///
-/// ⚠️ THE GREY IS A STAND-IN, NOT THE DESIGN. Real glass on a dark ground
-/// reflecting a dark object is very nearly invisible, and we could not tell
-/// whether that was the material being subtle or the plane never being hit. The
-/// opaque grey answered it and then stayed.
+/// ⚠️ THE GREY WAS SCAFFOLDING AND IS NOW BEHIND THE SWITCH, not in front of
+/// it. Real glass on a dark ground reflecting a dark object is very nearly
+/// invisible, and while the energy was being built we could not tell whether
+/// that was the material being subtle or the plane never being hit at all. The
+/// opaque grey answered that question and then overstayed by several days.
 ///
-/// Turning glass on is a bigger change than a material: the contact shadow and
-/// the contact darkening both work by MULTIPLYING the surface, so an invisible
-/// surface takes the cube's grounding with it. `?glass=`.
-double get kGlass => qDouble('glass', 0);
+/// `?glass=0` brings it back, which is worth keeping: it is still the fastest
+/// way to prove the surface is being hit when something about the table looks
+/// wrong.
+///
+/// Switching it is a bigger change than a material. The contact shadow and the
+/// contact darkening both work by MULTIPLYING the surface, so a nearly
+/// invisible surface takes the cube's grounding with it — that was the risk
+/// when this went on, and it was checked: the cube keeps its footing.
+final double kGlass = qDouble('glass', 1);
 
 /// Cube size as a fraction of the viewport's shortest side.
 const double kCubeSize = 0.26;
@@ -80,7 +95,7 @@ const double kCubeSize = 0.26;
 /// site's story rather than about a number. `?mat=0` puts the plain cube in the
 /// current renderer so the two can be compared on one screen in one moment,
 /// which is the only comparison worth making.
-double get kMaterial => qDouble('mat', 1);
+final double kMaterial = qDouble('mat', 1);
 
 /// The cube's tuning knobs, live on the deployed build.
 ///
@@ -92,30 +107,40 @@ double get kMaterial => qDouble('mat', 1);
 /// bright and then too dark because both were moved together — the rim was the
 /// fault and the overall level was fine, but adjusted as one they could not be
 /// told apart.
-double get kLevel => qDouble('lvl', 1).clamp(0.2, 3.0);
-double get kFuzz => qDouble('fuzz', 1).clamp(0.0, 4.0);
-double get kMoss => qDouble('moss', 1).clamp(0.0, 2.0);
-double get kLichen => qDouble('lich', 1).clamp(0.0, 2.0);
+final double kLevel = qDouble('lvl', 1).clamp(0.2, 3.0);
+final double kFuzz = qDouble('fuzz', 1).clamp(0.0, 4.0);
+final double kMoss = qDouble('moss', 1).clamp(0.0, 2.0);
+final double kLichen = qDouble('lich', 1).clamp(0.0, 2.0);
 
 /// Stones across one face.
 ///
 /// ⚠️ THE ONLY ONE WITH A REAL FLOOR AND CEILING RATHER THAN A RANGE. A face is
 /// about 55 pixels on a phone: under four stones stops reading as a wall, and
 /// over eight turns the joints to mush. The clamp is the constraint, not taste.
-double get kBlocks => qDouble('blocks', 3.4).clamp(3.0, 9.0);
+final double kBlocks = qDouble('blocks', 3.4).clamp(3.0, 9.0);
 
 /// What fraction of full resolution the scene shader renders at.
 ///
 /// Fill rate is the cost model, so this is the one lever that reduces work
-/// without changing what the shader computes — 0.7 is roughly half the pixels.
-/// Only the shader softens; text is a separate layer at full resolution.
+/// without changing what the shader computes. Only the shader softens; the text
+/// is a separate layer and is always at full resolution.
+///
+/// ⚠️ 1.0 IS NATIVE, AND IT IS WHAT THE CACHING WORK WAS FOR. It ran at 0.7 for
+/// three days because the frame could not afford more, and that softness landed
+/// on the cube's edges — the one surface in this scene that must never be soft.
+/// Caching the static parts bought it back: 45-50 fps at 0.7 before, against a
+/// stable 75 at 1.0 after, measured against the pre-caching commit on the same
+/// machine on the same afternoon.
 ///
 /// ⚠️ AND IT IS THE MEASURING INSTRUMENT. Frame rate near the display's cap
 /// tells you almost nothing: everything piles up against the same ceiling and
 /// differences vanish. Raising this pushes the whole scene well below the cap,
 /// where a change of a few percent is a change of a few frames instead of
-/// nothing at all. Profile at 1.2, decide at 0.7. `?scale=`.
-double get kSceneScale => qDouble('scale', 0.7).clamp(0.3, 2.0);
+/// nothing at all. Profile at 1.3, decide at 1.0. `?scale=`.
+final double kSceneScale = qDouble('scale', 1).clamp(0.3, 2.0);
+
+/// TEMPORARY profiling switches — `?off=`, a sum. Remove with the shader's.
+final double kOff = qDouble('off', 0);
 
 class WorldScene extends StatefulWidget {
   const WorldScene({required this.camera, super.key});
@@ -152,6 +177,7 @@ class _WorldSceneState extends State<WorldScene>
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
   final _LightCache _lightCache = _LightCache();
+  final _BandCache _bandCache = _BandCache();
 
   @override
   void initState() {
@@ -185,6 +211,7 @@ class _WorldSceneState extends State<WorldScene>
     _coverShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
+    _bandCache.dispose();
     super.dispose();
   }
 
@@ -213,6 +240,7 @@ class _WorldSceneState extends State<WorldScene>
         energyShader: energyShader,
         coverShader: coverShader,
         lightCache: _lightCache,
+        bandCache: _bandCache,
         time: _time,
         camera: widget.camera.position,
         velocity: widget.camera.velocity,
@@ -271,13 +299,22 @@ class _CubeCache {
     return made;
   }
 
+  /// The part of the signature that comes from the knobs, assembled once.
+  ///
+  /// ⚠️ IT STILL LISTS EVERY INPUT — that is the safety argument and it has not
+  /// been weakened. What changed is only WHEN it is built: these are read from
+  /// the page URL, which cannot change without a page load, so joining them
+  /// into a string sixty times a second was pure waste. The per-frame part
+  /// below is the part that can actually vary.
+  static final String _knobs = [
+    kCubeSize, kCubeHalf, kSpin, kMaterial, kLevel, kFuzz, kMoss, kLichen,
+    kBlocks, kGlass, kOff,
+  ].join(',');
+
   /// Everything the cube's shading depends on. `time` is deliberately absent:
   /// that is the entire reason this works.
-  static String signatureFor(Size low, double camera) => [
-    low.width, low.height, camera,
-    kCubeSize, kCubeHalf, kSpin, kMaterial, kLevel, kFuzz, kMoss, kLichen,
-    kBlocks, kGlass, qDouble('off', 0),
-  ].join(',');
+  static String signatureFor(Size low, double camera) =>
+      '${low.width},${low.height},$camera,$_knobs';
 
   void dispose() {
     image?.dispose();
@@ -310,13 +347,80 @@ class _LightCache {
   /// texels across. Costs one megabyte, once.
   static const int size = 512;
 
-  static String signatureFor() =>
-      [kCubeHalf, kSpin, qDouble('off', 0)].join(',');
+  static final String wanted = [kCubeHalf, kSpin, kOff].join(',');
 
   void dispose() {
     image?.dispose();
     image = null;
     signature = null;
+  }
+}
+
+/// The galaxy's glow, kept until the sky has actually turned far enough to see.
+///
+/// ⚠️ THIS IS A THIRD KIND OF REUSE, and the distinction is worth keeping
+/// straight. The cube's layer is cached because nothing about it CHANGES. The
+/// band renders small because it has no DETAIL. This one is neither: it changes
+/// continuously and it is already small — it just changes far slower than sixty
+/// times a second.
+///
+/// The sky turns at 0.010 radians per second, so between two frames it moves
+/// about a thousandth of a degree. Redrawing a whole pass for that is work
+/// nobody can see, and — the reason this is worth doing at all — it was one of
+/// five large textures allocated and released every frame. Cutting the rate by
+/// fourteen removes most of that pass's share of the churn.
+///
+/// ⚠️ THE STARS ARE NOT FROZEN WITH IT, deliberately: they twinkle, and they
+/// are drawn sharp at full resolution in the scene pass. That does decouple two
+/// things designed to be one field — the glow and the star density come from
+/// the band, the star POSITIONS are recomputed live — so the tolerance below is
+/// what bounds the disagreement, and it is bounded at one pixel.
+class _BandCache {
+  ui.Image? image;
+  Size? at;
+  double camera = double.nan;
+  double turn = double.nan;
+
+  /// The sky's rotation, in radians. ⚠️ MIRRORS `bandOnly` IN THE SHADER — if
+  /// the rates there change, this has to follow or the band stops refreshing at
+  /// the right moments.
+  static double turnFor(double time, double camera) =>
+      time * 0.010 + camera * 0.085;
+
+  /// How far the sky may turn before this is redrawn, in radians.
+  ///
+  /// Derived, not chosen: an angular change of `d` moves the sky across the
+  /// screen by about `d` times the focal length in pixels, so allowing one
+  /// pixel of movement in the buffer the scene is composed at means
+  /// `1 / (focal in pixels)`. That is a fourteenth of the frames at a typical
+  /// desktop size, and it scales correctly when the window does.
+  ///
+  /// ⚠️ kFocal MIRRORS THE SHADER's constant, same as turnFor above.
+  static const double _kFocal = 2.7;
+  static double toleranceFor(Size low) =>
+      1.0 / (_kFocal * low.shortestSide * kCubeSize);
+
+  bool stale(Size low, double time, double camera) =>
+      image == null ||
+      at != low ||
+      // The camera does not only turn the sky, it re-aims every ray — so any
+      // movement at all invalidates this, and during travel it redraws every
+      // frame. That is correct, and travel is two seconds of a visit.
+      this.camera != camera ||
+      (turnFor(time, camera) - turn).abs() > toleranceFor(low);
+
+  void store(ui.Image fresh, Size low, double time, double camera) {
+    image?.dispose();
+    image = fresh;
+    at = low;
+    this.camera = camera;
+    turn = turnFor(time, camera);
+  }
+
+  void dispose() {
+    image?.dispose();
+    image = null;
+    at = null;
   }
 }
 
@@ -329,6 +433,7 @@ class _ScenePainter extends CustomPainter {
     required this.energyShader,
     required this.coverShader,
     required this.lightCache,
+    required this.bandCache,
     required this.time,
     required this.camera,
     required this.velocity,
@@ -347,6 +452,7 @@ class _ScenePainter extends CustomPainter {
   final double velocity;
   final _CubeCache cache;
   final _LightCache lightCache;
+  final _BandCache bandCache;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -418,15 +524,15 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(17, kLichen)
         ..setFloat(18, kBlocks)
         ..setFloat(19, kCubeHalf)
-        ..setFloat(20, kSpin * math.pi / 180.0)
+        ..setFloat(20, kSpinRadians)
         ..setFloat(21, kGlass)
-        // uSpinCS — the pose as (cos, sin), turned once here rather than a
-        // hundred times per pixel in the shader. See spinInto().
-        ..setFloat(22, math.cos(kSpin * math.pi / 180.0))
-        ..setFloat(23, math.sin(kSpin * math.pi / 180.0))
+        // uSpinCS — the pose as (cos, sin), turned once at startup rather than
+        // a hundred times per pixel in the shader. See spinInto().
+        ..setFloat(22, kSpinCos)
+        ..setFloat(23, kSpinSin)
         // uOff — TEMPORARY profiling switches. `?off=`. Remove with the
         // shader's.
-        ..setFloat(24, qDouble('off', 0))
+        ..setFloat(24, kOff)
         ..setFloat(25, layer);
     }
 
@@ -448,6 +554,10 @@ class _ScenePainter extends CustomPainter {
         // smear the cube's edge across its neighbours, which is the one thing
         // this whole layer exists to keep exact.
         ..setImageSampler(4, cache.cover ?? blank,
+            // Spelled out although it is the default: every other sampler here
+            // names its filtering, and a reader comparing them would otherwise
+            // have to know the default to see that this one differs on purpose.
+            // ignore: avoid_redundant_argument_values
             filterQuality: FilterQuality.none);
     }
 
@@ -469,7 +579,7 @@ class _ScenePainter extends CustomPainter {
     // on a floor under a fixed light, in the surface's own coordinates. So it
     // survives travelling and window resizes untouched, and in practice is
     // computed exactly once for the life of the page.
-    final wantLight = _LightCache.signatureFor();
+    final wantLight = _LightCache.wanted;
     if (lightCache.signature != wantLight || lightCache.image == null) {
       final lightLow = Size(
         _LightCache.size.toDouble(),
@@ -488,17 +598,26 @@ class _ScenePainter extends CustomPainter {
       lightCache.signature = wantLight;
     }
 
-    // ── The galaxy band, at a quarter of each side ──────────────────────────
+    // ── The galaxy band and the energy, at a quarter of each side ────────────
     //
-    // ⚠️ REDRAWN EVERY FRAME, UNLIKE THE OTHER TWO. The sky turns, slowly, so
-    // this is not a thing that can be cached — it is a thing that does not need
-    // resolution. A sixteenth of the pixels, and no edge anywhere in it to give
-    // that away.
+    // Neither needs resolution: both are smooth over the whole frame with no
+    // edge of their own anywhere in them, and every edge in that part of the
+    // picture belongs to something still drawn at full size. A sixteenth of the
+    // pixels, and nothing to give it away.
+    //
+    // ⚠️ THEY DIFFER IN HOW OFTEN, THOUGH, AND BY A FACTOR OF FOURTEEN. The
+    // energy is a flow the eye follows, so it is redrawn every frame. The sky
+    // turns a thousandth of a degree in that time — see _BandCache.
     final bandLow = Size(
       (low.width * 0.25).roundToDouble(),
       (low.height * 0.25).roundToDouble(),
     );
-    final bandImage = renderSmall(bandShader, 4, bandLow);
+    if (bandCache.stale(low, time, camera)) {
+      bandCache.store(
+        renderSmall(bandShader, 4, bandLow), low, time, camera,
+      );
+    }
+    final bandImage = bandCache.image!;
     final energyImage = renderSmall(energyShader, 5, bandLow);
 
     // ── The cube's shading, redrawn only when something it depends on moves ──
@@ -564,7 +683,8 @@ class _ScenePainter extends CustomPainter {
 
     image.dispose();
     picture.dispose();
-    bandImage.dispose();
+    // ⚠️ bandImage IS NOT DISPOSED HERE — the cache owns it now and will free
+    // it when it replaces it, or when the widget goes away.
     energyImage.dispose();
   }
 

@@ -81,7 +81,7 @@ List<FontVariation> _textAxes(double weight, double size) => [
 /// way to find it is on a real phone against the moving scene.
 ///
 /// So: `?w=450`, and hand back whichever value wins.
-double get kDisplayWeight => qDouble('w', 400).clamp(400, 600);
+final double kDisplayWeight = qDouble('w', 400).clamp(400, 600);
 
 /// The SUBJECT's weight — heavier than the qualifier that follows it.
 ///
@@ -93,7 +93,7 @@ double get kDisplayWeight => qDouble('w', 400).clamp(400, 600);
 /// tinted, and the two would argue every frame.
 ///
 /// This is the value for a LARGE frame. Overridable as `?ws=`.
-double get kSubjectWeight => qDouble('ws', 500).clamp(400, 600);
+final double kSubjectWeight = qDouble('ws', 500).clamp(400, 600);
 
 /// How much heavier the subject goes on the smallest frames, in axis units.
 ///
@@ -106,7 +106,7 @@ double get kSubjectWeight => qDouble('ws', 500).clamp(400, 600);
 /// So the step is not a constant: it grows as the frame shrinks, the same way
 /// an optical size axis compensates for size rather than pretending one drawing
 /// suits every size. Overridable as `?wsc=` to find the right amount.
-double get kSubjectWeightBoost => qDouble('wsc', 100).clamp(0, 200);
+final double kSubjectWeightBoost = qDouble('wsc', 100).clamp(0, 200);
 
 /// The subject's weight for a given frame.
 ///

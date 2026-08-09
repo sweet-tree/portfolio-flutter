@@ -10,7 +10,7 @@ import 'package:web/web.dart' as web;
 /// A URL switch rather than a debug build flag, so the numbers can be read off
 /// a real phone hitting the real deployment — which is the only place some of
 /// them (cross-origin isolation, the JS-vs-WebAssembly path) mean anything.
-bool get statsRequested => qFlag('stats');
+final bool statsRequested = qFlag('stats');
 
 /// True when compiled by dart2js rather than dart2wasm.
 ///

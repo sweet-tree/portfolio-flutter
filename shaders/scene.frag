@@ -2270,22 +2270,12 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     float shadow = isOff(1.0) ? 1.0 : lit.r;
     float ao = isOff(2.0) ? 1.0 : lit.g;
 
-    // ⚠️ DIAGNOSTIC MATERIAL — an opaque light floor, not glass.
-    //
-    // The glass version was invisible and we could not tell whether that was
-    // because glass is nearly invisible by nature or because the plane was
-    // never being hit. This makes the answer unambiguous: if a grey floor
-    // with a shadow on it appears, the scene is correct and the glass was
-    // merely too subtle. Revert to the glass branch below once confirmed.
-    // The cut edge glows: light that has been travelling inside the sheet by
-    // total internal reflection escapes where the glass is cut. On a real
-    // glass table this is by far the brightest part of it.
-
-    // ── THE GLASS MATERIAL — no longer parked, switched with `?glass=1` ──────
+    // ── THE GLASS MATERIAL — the real one, and now the DEFAULT ──────────────
     //
     // ⚠️ RESTORED VERBATIM FROM THE COMMENT IT SAT IN, deliberately unimproved.
-    // The point of turning it on is to see WHAT IT WAS, so nothing here has
-    // been tidied, rebalanced or corrected on the way back in.
+    // The point of turning it on was to see WHAT IT WAS, so nothing here was
+    // tidied, rebalanced or corrected on the way back in — and then it turned
+    // out to need none of that. `?glass=0` selects the diagnostic below.
     //
     // ENERGY CONSERVING: reflect OR transmit, never both added. `fres` is ~4%
     // looking straight down at the sheet and rises to 1 at grazing, so most of
@@ -2315,6 +2305,15 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
       return mix(background, surface, presence);
     }
 
+    // ── THE DIAGNOSTIC SURFACE — `?glass=0`, and no longer the default ──────
+    //
+    // An opaque light floor rather than glass. It exists to answer ONE question
+    // unambiguously: is the plane being hit at all? Clean glass on a dark ground
+    // reflecting a dark object is so nearly invisible that "subtle" and "never
+    // intersected" look identical, and we lost time to that once. If a grey
+    // floor with a shadow on it appears here, the geometry is fine.
+    //
+    // Kept for that reason and no other. It is not a fallback and not a style.
     vec3 diagnostic = vec3(0.52, 0.53, 0.58);
     diagnostic *= mix(0.06, 1.0, shadow);   // the cast shadow
     diagnostic *= mix(0.10, 1.0, ao);       // the contact occlusion
@@ -2331,41 +2330,11 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     diagnostic = mix(diagnostic, glow, isCutEdge);
     return mix(background, diagnostic, presence);
 
-    // ── THE GLASS MATERIAL — parked, not deleted ─────────────────────────────
-    //
-    // Swap the block above for this to go back to actual glass. Every value it
-    // needs is already computed above; this is the line that assembles them,
-    // and it is the one that got lost when the diagnostic replaced it.
-    //
-    // ENERGY CONSERVING: reflect OR transmit, never both added. `fres` is
-    // ~4% looking straight down at the sheet and rises to 1 at grazing, so
-    // most of what you see through it is the transmitted background.
-    //
-    //   vec3 surface = mix(transmitted, reflected + second, fres);
-    //
-    // The shadow darkens what passes through; the occlusion darkens the
-    // ambient part.
-    //
-    //   surface *= mix(0.18, 1.0, shadow) * mix(0.25, 1.0, ao);
-    //
-    // ⚠️ The energy must move INSIDE this composite rather than being added
-    // on top as it is above — light inside the sheet is transmitted, so it
-    // belongs with the transmitted term, not painted over the surface:
-    //
-    //   surface += surfaceEnergy(p, n) * (1.0 - fres);
-    //
-    // Then the cut edge and the presence fade as above:
-    //
-    //   surface = mix(surface, glow, isCutEdge);
-    //   return mix(background, surface, presence);
-    //
-    // ⚠️ AND IT STAYS IN RAW BRIGHTNESS, like everything else here. The tone
-    // curve runs once, at the end of main. Do not reintroduce a tone map on
-    // this branch when restoring it.
-    //
-    // Expect it to be nearly INVISIBLE on its own — that is what clean glass
-    // on a dark ground does, and it is why the diagnostic exists. What makes
-    // it readable is the cut edge, the energy, and eventually some dirt.
+    // ⚠️ THE "PARKED GLASS" RECIPE THAT USED TO SIT HERE IS GONE, and it was
+    // deleted rather than left: the glass it described is the live branch a few
+    // lines above, so a block of commented-out source claiming to be the way
+    // back to it was documentation that had become false. Everything it taught
+    // now lives on the real code.
   }
 
   return background;

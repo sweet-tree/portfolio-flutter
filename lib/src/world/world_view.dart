@@ -35,7 +35,7 @@ import 'package:portfolio/src/world/world_scene.dart';
 /// It also has to be a real render rather than a flat dark rectangle: the
 /// statement's legibility depends on where the bright energy actually falls,
 /// so type positioned against grey would be positioned against a fiction.
-bool get bareScene => qFlag('bare');
+final bool bareScene = qFlag('bare');
 
 class WorldView extends StatefulWidget {
   const WorldView({super.key});
