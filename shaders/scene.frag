@@ -294,6 +294,28 @@ float fbm3(vec3 p) {
   return sum;
 }
 
+/// The same field, stopped after three octaves.
+///
+/// ⚠️ FOR ANYTHING SHADED PER SAMPLE RATHER THAN PER PIXEL. The cube's edges
+/// are antialiased by shading 64 samples and averaging them, so every
+/// instruction inside shadeCube is paid for 64 times on an edge pixel. The two
+/// octaves dropped here carry detail finer than one pixel at the size the cube
+/// is drawn — invisible, and 16 hash lookups each.
+///
+/// Its mean is the same as fbm3's; only its ceiling is lower (0.875 against
+/// 0.969), so a threshold tuned against one is close but not identical on the
+/// other.
+float fbm3Coarse(vec3 p) {
+  float sum = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 3; i++) {
+    sum += amp * noise3(p);
+    p *= 2.07;
+    amp *= 0.5;
+  }
+  return sum;
+}
+
 // The galactic plane's pole.
 //
 // ⚠️ CHOSEN AGAINST THE VISIBLE CONE, not by taste. The sky here is a narrow
@@ -840,40 +862,313 @@ float occlusion(vec3 p, vec3 n, float spin, float rotation) {
   return open / 12.0;
 }
 
+// ── The cube's material: mossed stone ───────────────────────────────────────
+//
+// ⚠️ READ THIS BEFORE CHANGING ANY OF IT.
+//
+// The reference is carved stone under moss in a cloud forest, and the thing
+// that makes those photographs work is not the moss — it is that the moss
+// REVEALS the stone. It gathers where water sits, which is the hollows, and it
+// is scoured off what stands proud. So the growth is not decoration laid over
+// the carving; it is the carving made visible. Every rule below serves that.
+//
+// Two facts bound what is worth computing:
+//
+//   · The cube is about 180 pixels across on a desktop and 78 on a phone. One
+//     face is nearer 55. There is no such thing as photographic detail at that
+//     size, so the target is "reads unmistakably as moss", not "you can see the
+//     shoots". Anything finer than a pixel is not merely wasted, it ALIASES —
+//     it crawls and fizzes as the light moves.
+//   · Everything here runs inside the cube's antialiasing. See the resolve in
+//     main: the material is now evaluated ONCE PER VISIBLE FACE per pixel
+//     rather than once per sub-sample, which is what makes a material this rich
+//     affordable at all.
+
+/// fbm whose finest octaves fade out as a pixel grows to cover them.
+///
+/// ⚠️ THIS IS THE ANTIALIASING FOR EVERYTHING PROCEDURAL HERE, and it is why
+/// the material can be sampled once per face instead of 64 times per pixel.
+///
+/// A detail smaller than a pixel cannot be drawn; it can only be guessed at,
+/// differently every frame, which is what makes procedural surfaces crawl. A
+/// photograph solves this with mipmaps — smaller copies, pre-blurred. The
+/// equivalent for noise is to simply stop adding octaves once their wavelength
+/// drops below what a pixel can hold, and fade them out rather than dropping
+/// them, or the detail pops as the camera moves.
+///
+/// [lod] is how much of this noise's own space one pixel covers. The result is
+/// renormalised, so it always averages 0.5 whichever octaves survived — without
+/// that, a threshold tuned on a desktop would mean something else on a phone.
+float fbm3Band(vec3 p, float lod) {
+  float sum = 0.0;
+  float norm = 0.0;
+  float amp = 0.5;
+  float freq = 1.0;
+  for (int i = 0; i < 5; i++) {
+    float w = 1.0 - smoothstep(0.35, 0.90, lod * freq);
+    if (w > 0.001) {
+      sum += amp * w * noise3(p * freq);
+      norm += amp * w;
+    }
+    freq *= 2.07;
+    amp *= 0.5;
+  }
+  return norm > 1e-4 ? sum / norm : 0.5;
+}
+
+/// How thick the growth is at a point, 0..1, averaging 0.5.
+///
+/// ⚠️ THREE SCALES, BECAUSE MOSS HAS THREE. Where it grows at all (patches
+/// across a whole face), the clumps within a patch, and the shoot texture
+/// within a clump. One scale alone is the difference between "a pattern" and "a
+/// growth" — it reads as camouflage, because nothing in nature has exactly one
+/// size of feature. The finest band is below a pixel on a phone and fades
+/// itself out there; that is the band limiting above doing its job rather than
+/// a compromise.
+float mossHeight(vec3 q, float lod) {
+  // `patch` is a reserved word in GLSL — it belongs to tessellation shaders.
+  float spread = fbm3Band(q * 1.7, lod * 1.7);
+  float clump = fbm3Band(q * 6.0 + 13.7, lod * 6.0);
+  float shoot = fbm3Band(q * 23.0 + 31.3, lod * 23.0);
+  return spread * 0.50 + clump * 0.34 + shoot * 0.16;
+}
+
+/// The split-sum environment BRDF, as maths instead of a lookup texture.
+///
+/// ⚠️ WITHOUT THIS, A VERY ROUGH SURFACE COMES OUT TOO DARK. A rough material
+/// bounces light between its own microscopic facets several times before it
+/// escapes; a single-bounce model throws away everything after the first, and
+/// the loss grows with roughness. Moss is about as rough as a surface gets, so
+/// this is not a subtlety here — it is the difference between moss and grey
+/// felt. flutter_scene solves it with a lookup texture; this is Lazarov's
+/// analytic fit of the same function, which costs a few instructions and no
+/// download.
+vec2 envDFG(float nDotV, float roughness) {
+  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 r = roughness * c0 + c1;
+  float a004 = min(r.x * r.x, exp2(-9.28 * nDotV)) * r.x + r.y;
+  return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+/// How much of the world one pixel covers at the cube, in world units.
+///
+/// This is the number that decides how much of the material is worth
+/// computing. It falls out of the same constants the camera is built from, so
+/// it is automatically right on a phone, on a desktop, and at whatever
+/// resolution the scene is being rendered at — `uCubeUnit` already carries the
+/// render scale.
+float cubeLod() {
+  return (length(kCubeOrigin - kEye) / kFocal) / uCubeUnit;
+}
+
+/// Everything the lighting needs to know about the surface at one point.
+struct CubeSurface {
+  vec3 albedo;
+  float roughness;
+  vec3 normal;        // tilted by the growth's own slope
+  float occlusion;    // light cannot reach the bottom of a clump
+  float through;      // how much light passes THROUGH rather than off
+};
+
+CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
+  // ⚠️ SAMPLED IN THE CUBE'S OWN FRAME, so the growth belongs to the object
+  // rather than to the space it sits in. Without the rotation it would swim
+  // across the faces the moment the cube turns. Spin is fixed at 0 today, which
+  // is exactly why this is easy to get wrong and never notice.
+  //
+  // ⚠️ AND IT IS 3D NOISE, NOT A PICTURE ON EACH FACE. A pattern that lives in
+  // space has no seams: a clump that reaches the edge of one face continues onto
+  // the next, the way growth on a real rock does. Texturing face by face has to
+  // fight that and always shows a join along the edges.
+  vec3 q = rotY(-spin) * (p - kCubeOrigin);
+
+  float h = mossHeight(q, lod);
+
+  // The growth's SLOPE, from the field itself rather than from the screen.
+  // Stepping by the pixel footprint (never smaller) means the slope is measured
+  // over exactly what is visible — so the relief softens as the cube gets
+  // smaller instead of turning into per-pixel noise.
+  float e = max(lod, 0.004);
+  vec3 grad = vec3(
+    mossHeight(q + vec3(e, 0.0, 0.0), lod),
+    mossHeight(q + vec3(0.0, e, 0.0), lod),
+    mossHeight(q + vec3(0.0, 0.0, e), lod)
+  ) - h;
+
+  // ⚠️ WHERE MOSS GROWS: where water sits. Upward faces are lusher than
+  // vertical ones — but only somewhat. The references settle it: a carved
+  // VERTICAL wall in a cloud forest is covered edge to edge, because the air
+  // itself is wet. "Water runs off the sides" is a dry-climate rule.
+  //
+  // This same rule is what will make a carving legible later: a groove holds
+  // water, so moss fills it and the pattern appears without being drawn.
+  // ⚠️ EVERY THRESHOLD BELOW IS A PERCENTILE OF THE FIELD, MEASURED, NOT
+  // GUESSED. mossHeight averages 0.483 with a standard deviation of 0.073 —
+  // sampled over 120,000 points, and the same to three decimals on a phone as
+  // on a desktop, which is the band limiting doing its job.
+  //
+  // That number is small, and it is the trap here: averaging three bands
+  // shrinks the spread, so thresholds carried over from a single-band field sit
+  // several deviations out and almost nothing passes. The first version of this
+  // used 0.50 with a 0.16 window, which put its midpoint at the 90th percentile
+  // and covered a tenth of the surface. RE-MEASURE IF THE BANDS CHANGE.
+  //
+  // 0.463 puts the midpoint at the 55th percentile, so a vertical face is about
+  // 45% covered; 0.405 puts it near the 25th, so an upward one is about 75%.
+  // The 0.06 window is roughly 0.8 of a deviation — patches with a defined
+  // edge, rather than the soft wash a wider one gives.
+  float upward = clamp(n.y, 0.0, 1.0);
+  float t = mix(0.463, 0.405, upward);
+  float moss = smoothstep(t, t + 0.06, h);
+
+  // ── The stone ────────────────────────────────────────────────────────────
+  // Not a flat grey. Rock has grain, and it has ridges where it has weathered
+  // — that second one is a fold of the noise about its middle, which turns
+  // smooth hills into creased ones and is the cheapest thing that reads as
+  // erosion rather than as blur.
+  // Both stretched across the field's real range rather than used raw: a
+  // normalised band sits within about a tenth of 0.5, so feeding it straight
+  // into a mix only ever reaches the middle of the two colours.
+  float grain = smoothstep(0.40, 0.60, fbm3Band(q * 9.0 + 71.3, lod * 9.0));
+  float creased = 1.0 - abs(2.0 * fbm3Band(q * 3.3 + 5.9, lod * 3.3) - 1.0);
+  float ridge = smoothstep(0.55, 1.0, creased);
+  vec3 stone = mix(vec3(0.098, 0.093, 0.086), vec3(0.156, 0.150, 0.137), grain);
+  stone *= mix(0.86, 1.08, ridge);
+
+  // ── The moss ─────────────────────────────────────────────────────────────
+  // ⚠️ MOSS IS NOT ONE GREEN, and this is the biggest single gain over a flat
+  // tint. In the references it runs from a bright yellow-green on the tips,
+  // where the light lands and the growth is newest, through a mid green, down
+  // to a cold near-black in the creases. Driving that from the SAME height
+  // field that shapes it means the bright parts are exactly the raised parts —
+  // they cannot drift out of register, because there is only one field.
+  // How far up a clump this is. The window is about 1.6 deviations, so the
+  // brightest tips are genuinely reached; t + 0.30 would be four deviations out
+  // and the crest colour would never appear at all.
+  float tip = smoothstep(t + 0.01, t + 0.13, h);
+  // ⚠️ A NARROWER RANGE THAN IT LOOKS LIKE IT SHOULD BE. The first version ran
+  // from near-black to a bright yellow-green, about five to one, and read as
+  // camouflage — because the light and the occlusion widen this range again on
+  // top. Real moss photographs at closer to two to one once you measure it
+  // rather than trusting the eye, which exaggerates colour in dark places.
+  const vec3 kDeep = vec3(0.042, 0.058, 0.034);
+  const vec3 kMid = vec3(0.072, 0.100, 0.046);
+  const vec3 kCrest = vec3(0.108, 0.132, 0.055);
+  vec3 mossC = mix(kDeep, kMid, smoothstep(0.0, 0.45, tip));
+  mossC = mix(mossC, kCrest, smoothstep(0.45, 1.0, tip));
+
+  // Patch-to-patch variation, on a scale much larger than a clump: some of it
+  // is drier and browner than the rest. Without this every patch is the same
+  // plant, which is the other half of why one-scale noise reads as camouflage.
+  float age = fbm3Band(q * 0.8 + 55.1, lod * 0.8);
+  mossC = mix(mossC, mossC * vec3(1.16, 1.00, 0.80), smoothstep(0.50, 0.64, age));
+
+  CubeSurface s;
+  s.albedo = mix(stone, mossC, moss);
+  s.roughness = max(mix(0.66, 0.94, moss), kMinRoughness);
+  // Light does not reach the bottom of a clump. This is what turns shape into
+  // depth; without it the relief reads as embossed metal.
+  // Spanning the field's real range: smoothstep(0.0, 0.55, h) would sit almost
+  // entirely past its own top end and hold nearly still.
+  s.occlusion = mix(1.0, mix(0.62, 1.0, smoothstep(0.40, 0.56, h)), moss);
+  // Only the thin, newest growth at the tips passes light.
+  s.through = moss * smoothstep(0.15, 0.85, tip);
+
+  // Only the part of the slope lying ALONG the face may tilt the normal. The
+  // component pointing straight out is the growth getting thicker, not the
+  // surface leaning, and letting it through would swell the face outward.
+  vec3 alongFace = grad - n * dot(grad, n);
+  // ⚠️ MEASURED, LIKE THE THRESHOLDS. `grad / e` is the field's SLOPE, which
+  // averages 2.17 here, so this multiplier is roughly the tangent of how far
+  // the surface leans: 0.15 is about 18 degrees on average and 27 at its
+  // steepest, which is relief you can see without the surface tearing itself
+  // apart. The first attempt used 26, which works out at 89 degrees — the
+  // normal lying flat — and turned every clump into a black hole. Stone keeps a
+  // tenth of it, because worn rock is not smooth either.
+  s.normal = normalize(n - alongFace * (mix(0.035, 0.150, moss) / e));
+  return s;
+}
+
 // ── Shading ─────────────────────────────────────────────────────────────────
 
 /// Intersects and shades the cube along one camera ray. Returns its colour
-/// and writes 1.0 to [hit]. This is the unit the supersampler works in: every
-/// sample is SHADED, not just tested for coverage.
-vec3 shadeCubeRay(vec3 rd, float spin, out float hit);
+/// and writes 1.0 to [hit].
+vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit);
 
-vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility) {
-  const vec3 albedo = vec3(0.016, 0.016, 0.021);
-  const float roughness = max(0.20, kMinRoughness);
-  const vec3 f0 = vec3(0.10, 0.10, 0.115);
+vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) {
+  CubeSurface s = cubeSurface(p, n, spin, lod);
+  vec3 ns = s.normal;
+  vec3 albedo = s.albedo;
+  float roughness = s.roughness;
+
+  // 0.04 is the physical reflectance of every non-metal. The old 0.10 was
+  // invented to give a near-black cube some shape to read by; a surface with
+  // real colour in it does not need the help.
+  const vec3 f0 = vec3(0.04);
 
   vec3 l = normalize(kLightPos - p);
   vec3 h = normalize(l + v);
-  float nDotL = max(dot(n, l), 0.0);
-  float nDotV = max(dot(n, v), 1e-4);
+  float nDotL = max(dot(ns, l), 0.0);
+  float nDotV = max(dot(ns, v), 1e-4);
+  // ⚠️ THE GEOMETRIC NORMAL, NOT THE BUMPED ONE, wherever the question is about
+  // the SHAPE rather than the surface — how edge-on this face is to the camera.
+  // Feeding those terms the bumpy normal turns detail finer than a pixel into
+  // blotchy brightness, which is a well-known way to make a textured surface
+  // sparkle as it moves.
+  float nDotVg = max(dot(n, v), 1e-4);
 
-  float d = DistributionGGX(n, h, roughness);
+  float d = DistributionGGX(ns, h, roughness);
   float vis = VisibilitySmith(nDotV, nDotL, roughness);
   vec3 fresnel = FresnelSchlick(max(dot(h, v), 0.0), f0);
   vec3 direct = (d * vis) * fresnel;
-  direct += albedo * (1.0 / 3.14159265) * (1.0 - fresnel);
+
+  // ⚠️ WRAPPED DIFFUSE, ON THE MOSS ONLY — the single most "alive" thing here.
+  //
+  // Moss is not opaque. Light enters a frond, bounces around inside and leaves
+  // somewhere else, so the growth stays lit a little way PAST the point where a
+  // solid surface would have turned away from the light. That soft, late
+  // falloff is what the eye reads as something soft and organic; a hard
+  // terminator reads as something carved. Rock keeps the hard one, which is why
+  // this is weighted by how much growth is here.
+  float wrap = 0.55 * s.through;
+  float lambert = clamp((dot(ns, l) + wrap) / ((1.0 + wrap) * (1.0 + wrap)),
+                        0.0, 1.0);
+  direct += albedo * (1.0 / 3.14159265) * (1.0 - fresnel) *
+            (lambert / max(nDotL, 1e-4));
   direct *= nDotL * 3.4 * visibility;
 
-  vec3 r = reflect(-v, n);
-  vec3 fEnv = FresnelSchlickRoughness(nDotV, f0, roughness);
-  float grazeDamp = mix(0.28, 1.0, smoothstep(0.0, 0.5, nDotV));
-  vec3 ibl = envColor(r) * fEnv * grazeDamp;
-  ibl += envColor(n) * albedo;
+  // ⚠️ AND LIGHT THAT COMES THROUGH IT. Thin growth lit from behind glows —
+  // the effect that makes a leaf held up to the sun look nothing like a leaf on
+  // the ground. Strongest when looking toward the light through the surface,
+  // which is why it is driven by the view against the light rather than by the
+  // normal against it. Tinted by the moss's own colour, because that is what
+  // the light has passed through on the way.
+  float behind = pow(clamp(dot(-v, normalize(l + ns * 0.4)), 0.0, 1.0), 3.0);
+  direct += albedo * behind * s.through * 1.9 * visibility;
 
-  return direct + ibl;
+  // ── Indirect ─────────────────────────────────────────────────────────────
+  vec3 r = reflect(-v, ns);
+  float grazeDamp = mix(0.28, 1.0, smoothstep(0.0, 0.5, nDotVg));
+
+  // Split-sum with multiple-scattering compensation. Without the second term a
+  // surface this rough loses a visible amount of its light and reads as felt.
+  vec2 dfg = envDFG(nDotVg, roughness);
+  vec3 kS = FresnelSchlickRoughness(nDotVg, f0, roughness);
+  vec3 fssEss = kS * dfg.x + dfg.y;
+  float ems = 1.0 - (dfg.x + dfg.y);
+  vec3 fAvg = f0 + (1.0 - f0) / 21.0;
+  vec3 fmsEms = ems * fssEss * fAvg / (1.0 - fAvg * ems);
+
+  vec3 ibl = envColor(r) * fssEss * grazeDamp;
+  ibl += envColor(ns) * albedo * (fmsEms + (1.0 - fssEss));
+
+  // Occlusion darkens only what arrives from everywhere — never the lamp. A
+  // crease is hidden from the surroundings, not from a light it can see.
+  return direct + ibl * s.occlusion;
 }
 
-vec3 shadeCubeRay(vec3 rd, float spin, out float hit) {
+vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit) {
   vec3 n;
   vec2 t = cubeIntersect(kEye, rd, spin, n);
   if (t.x < 0.0) {
@@ -882,7 +1177,7 @@ vec3 shadeCubeRay(vec3 rd, float spin, out float hit) {
   }
   hit = 1.0;
   // Convex: a single light cannot make it shadow itself.
-  return shadeCube(kEye + rd * t.x, n, -rd, 1.0);
+  return shadeCube(kEye + rd * t.x, n, -rd, 1.0, spin, lod);
 }
 
 /// Everything EXCEPT the cube's own primary visibility: the background, and
@@ -970,7 +1265,10 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     if (tr.x > 0.0) {
       vec3 pr = p + n * 1e-3 + rr * tr.x;
       float visr = lightVisibility(pr, nr, spin, rotation);
-      reflected = shadeCube(pr, nr, -rr, visr);
+      // The footprint of a reflected ray is not the footprint of a camera ray,
+      // but a reflection in a surface this rough is soft anyway; erring coarse
+      // is both cheaper and closer to right than erring sharp.
+      reflected = shadeCube(pr, nr, -rr, visr, spin, cubeLod() * 2.0);
     } else {
       reflected = envColor(rr) * 0.25;
     }
@@ -992,7 +1290,7 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     vec3 second = vec3(0.0);
     if (tr2.x > 0.0) {
       vec3 pr2 = p2 + n * 1e-3 + rr2 * tr2.x;
-      second = shadeCube(pr2, nr2, -rr2, 1.0) * 0.35;
+      second = shadeCube(pr2, nr2, -rr2, 1.0, spin, cubeLod() * 2.0) * 0.35;
     }
 
     // Traced, not tuned: how much of the light and of the sky this point can
@@ -1190,10 +1488,40 @@ void main() {
 
   if (corners || abs(nearSurface) < px * 6.0 || edgeDist < px * 6.0) {
     // 8x8 rotated grid with a Gaussian reconstruction filter.
+    //
+    // ⚠️ THE SAMPLES RESOLVE COVERAGE. THE MATERIAL IS EVALUATED PER FACE.
+    //
+    // This used to shade all 64 samples and average the colours, which is the
+    // textbook answer and was right while the cube was one flat colour. It
+    // stops being right the moment the surface has a material on it, for two
+    // separate reasons:
+    //
+    //   · COST. Every instruction in the material would be paid 64 times on
+    //     every edge pixel. A material worth looking at cannot survive that,
+    //     and the cube's edges are the one thing that must never be cheapened.
+    //   · CORRECTNESS. 64 point samples of a detailed surface do not average to
+    //     what that surface looks like — they average to a guess that changes
+    //     as the camera moves, which is what makes procedural surfaces crawl.
+    //     The material is band limited instead (see fbm3Band), so asking it
+    //     once for the right footprint is not an approximation of the 64; it is
+    //     better than the 64.
+    //
+    // A convex box shows at most THREE faces, so the samples are gathered into
+    // three buckets by which face they landed on, and each bucket is shaded
+    // once at the average position of its own samples. Every sample still tests
+    // the geometry, so the silhouette and the internal edges are resolved
+    // exactly as finely as before — 64 levels of coverage, unchanged.
+    //
+    // Three fixed buckets rather than an array: a fragment shader indexed with
+    // a computed index is a portability minefield on the GLES backends this
+    // compiles down to, and three is not worth the risk.
     const float kRadius = 0.72;
     const float kSigma = 0.42;
     float weightSum = 0.0;
     float hitWeight = 0.0;
+    vec3 nA = vec3(0.0), nB = vec3(0.0), nC = vec3(0.0);
+    vec3 pA = vec3(0.0), pB = vec3(0.0), pC = vec3(0.0);
+    float wA = 0.0, wB = 0.0, wC = 0.0;
     for (int y = 0; y < 8; y++) {
       for (int x = 0; x < 8; x++) {
         // Sheared on BOTH axes. Shearing only x left every sample in a row
@@ -1211,19 +1539,39 @@ void main() {
           -(fragCoord.y + offset.y - uCubeCenter.y) / uCubeUnit
         );
         vec3 rdS = normalize(fwd * kFocal + right * uvS.x + up * uvS.y);
-        float hit;
-        vec3 c = shadeCubeRay(rdS, spin, hit);
-        sum += c * hit * w;
-        hitWeight += hit * w;
+        vec3 nk;
+        vec2 tk = cubeIntersect(kEye, rdS, spin, nk);
         weightSum += w;
-        // Where inside the pixel the cube is NOT. Averaging the offsets of the
-        // samples that missed gives the centre of the visible sliver, which is
-        // the only place the backdrop should be sampled from.
-        openOffset += offset * (1.0 - hit) * w;
-        openWeight += (1.0 - hit) * w;
+        if (tk.x > 0.0) {
+          hitWeight += w;
+          vec3 ph = kEye + rdS * tk.x;
+          // Which face. A box's face normals are far apart, so any sane
+          // threshold separates them; 0.99 also keeps the rounding at an edge
+          // from splitting one face into two buckets.
+          if (wA == 0.0 || dot(nk, nA) > 0.99) {
+            nA = nk; pA += ph * w; wA += w;
+          } else if (wB == 0.0 || dot(nk, nB) > 0.99) {
+            nB = nk; pB += ph * w; wB += w;
+          } else {
+            nC = nk; pC += ph * w; wC += w;
+          }
+        } else {
+          // Where inside the pixel the cube is NOT. Averaging the offsets of
+          // the samples that missed gives the centre of the visible sliver,
+          // which is the only place the backdrop should be sampled from.
+          openOffset += offset * w;
+          openWeight += w;
+        }
       }
     }
-    sum /= max(hitWeight, 1e-5);
+
+    // One material evaluation per face, at the average position of the samples
+    // that landed on it, weighted back by how much of the pixel each face owns.
+    vec3 acc = vec3(0.0);
+    if (wA > 0.0) acc += shadeCube(pA / wA, nA, -rd, 1.0, spin, px) * wA;
+    if (wB > 0.0) acc += shadeCube(pB / wB, nB, -rd, 1.0, spin, px) * wB;
+    if (wC > 0.0) acc += shadeCube(pC / wC, nC, -rd, 1.0, spin, px) * wC;
+    sum = acc / max(hitWeight, 1e-5);
     cov = hitWeight / max(weightSum, 1e-5);
     // No uncovered sliver at all means the backdrop is completely hidden, so
     // its value cannot matter; leave the ray at the centre.
@@ -1231,7 +1579,7 @@ void main() {
     else openOffset = vec2(0.0);
   } else {
     float hit;
-    sum = shadeCubeRay(rd, spin, hit);
+    sum = shadeCubeRay(rd, spin, px, hit);
     cov = hit;
   }
 
