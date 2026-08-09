@@ -52,6 +52,24 @@ uniform float uClouds;     // 0 = off, 1 = the flying volumetric energy
 // artifact. Both are defensible and the choice is not a shader's to make.
 uniform float uMaterial;
 
+// ⚠️ THE TUNING KNOBS, ALL APPENDED AFTER uMaterial — see the note above about
+// declaration order. They exist because the alternative is what we did all day:
+// change a constant, rebuild, look, change it again. Every one of these is a
+// number we argued about at least once.
+//
+// ⚠️ LEVEL AND FUZZ ARE SEPARATE ON PURPOSE. Moving both at once is exactly how
+// the cube ended up too bright and then too dark — the rim was the problem and
+// the overall level was fine, but they were adjusted together and the fault
+// could not be told apart from the fix.
+//
+// Deliberately NOT knobs: individual colours, joint width, streak strength. A
+// dial per constant is how a control panel becomes unusable.
+uniform float uLevel;    // ?lvl=   overall material brightness
+uniform float uFuzz;     // ?fuzz=  the soft rim on the growth
+uniform float uMoss;     // ?moss=  how much of the surface is growth
+uniform float uLichen;   // ?lich=  how much crust
+uniform float uBlocks;   // ?blocks= stones across one face
+
 out vec4 fragColor;
 
 // ── World ───────────────────────────────────────────────────────────────────
@@ -655,6 +673,40 @@ float VisibilitySmith(float nDotV, float nDotL, float roughness) {
   return 0.5 / max(ggx, 1e-5);
 }
 
+// ── Fuzz: the way fabric and moss actually scatter light ────────────────────
+//
+// ⚠️ MOSS IS NOT A SOLID, AND LIGHTING IT AS ONE IS THE LAST BIG THING WRONG.
+//
+// GGX describes a surface of microscopic mirrors — right for stone, metal, a
+// polished floor. Moss is nothing like that. It is thousands of upright shoots,
+// and light entering that thicket scatters sideways off their flanks. The
+// consequence is visible and familiar: fuzzy things go BRIGHT AT THEIR RIMS.
+// It is why velvet has a glow along its folds, why a peach has a halo in
+// sunlight, and why moss looks soft rather than merely dull. GGX cannot produce
+// it at any roughness — the effect lives where GGX has nothing.
+//
+// This is the standard cloth model (Estevez & Kulla's distribution with
+// Neubelt's visibility, as Filament uses). It matters more than any texture
+// detail at our size, because it changes how the surface answers light from
+// EVERY angle rather than adding features a phone cannot resolve.
+
+/// Charlie distribution: an inverted lobe with its energy at grazing angles,
+/// which is exactly where a thicket of upright fibres scatters.
+float D_Charlie(float roughness, float nDotH) {
+  float invAlpha = 1.0 / roughness;
+  float cos2h = nDotH * nDotH;
+  // Floored so the pow cannot blow up looking straight down the highlight.
+  float sin2h = max(1.0 - cos2h, 0.0078125);
+  return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / (2.0 * 3.14159265);
+}
+
+/// Neubelt's visibility term, which pairs with Charlie. Deliberately not the
+/// Smith term used for GGX: that assumes the mirrors shadow each other
+/// geometrically, and a thicket does not work that way.
+float V_Neubelt(float nDotV, float nDotL) {
+  return 1.0 / (4.0 * (nDotL + nDotV - nDotL * nDotV));
+}
+
 vec3 envColor(vec3 d) {
   float up = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
   vec3 ground = vec3(0.020, 0.020, 0.026);
@@ -1149,6 +1201,7 @@ struct CubeSurface {
   vec3 normal;        // tilted by the growth's own slope
   float occlusion;    // light cannot reach the bottom of a clump
   float through;      // how much light passes THROUGH rather than off
+  float fuzz;         // how much of this is a thicket rather than a solid
   vec3 f0;            // reflectance head-on
 };
 
@@ -1172,6 +1225,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
     plain.normal = n;
     plain.occlusion = 1.0;
     plain.through = 0.0;
+    plain.fuzz = 0.0;
     plain.f0 = vec3(0.10, 0.10, 0.115);
     return plain;
   }
@@ -1198,7 +1252,10 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // Stretched in y so blocks are wider than they are tall, which is what
   // courses of masonry look like whatever the culture: gravity settles stones
   // onto their long edge.
-  const float kStoneScale = 3.1;
+  // Cells per world unit, from the count of stones across a face — the cube is
+  // two half-sizes wide. Stated as a count because that is the thing anyone
+  // actually has an opinion about.
+  float kStoneScale = uBlocks / (kHalfSize * 2.0);
   const vec3 kStoneAspect = vec3(1.0, 1.7, 1.0);
   const float kJointWidth = 0.045;
   // How deep a joint is cut, in world units — the cube is 1.1 across, so this
@@ -1304,8 +1361,34 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   float fringe = fbm3Band(q * 34.0 + 77.3, lod * 34.0);
   float hf = h + (fringe - 0.5) * 0.055;
 
+  // ⚠️ GRAVITY. THE ONE THING NO AMOUNT OF EXTRA NOISE CAN IMITATE.
+  //
+  // Everything so far has been the same in all directions, and real weathering
+  // never is: water gathers in a joint, overflows, and runs DOWN the block
+  // below it, leaving a damp tail that grows and stains. Every wall in the
+  // world is streaked downward from its joints, and a surface without that
+  // reads as decorated rather than weathered however fine its detail.
+  //
+  // It costs nothing, because the masonry already knows which way its nearest
+  // joint lies — that is the direction it hands back for the chamfer. If that
+  // joint is ABOVE us, we are in its runoff. The strength falls away with
+  // distance from it, which is what makes a tail rather than a band.
+  //
+  // The direction has to be un-stretched back into world proportions first, or
+  // the streaks lean by however much the blocks were squashed.
+  vec3 worldUp = vec3(0.0, 1.0, 0.0);
+  vec3 faceUpRaw = worldUp - n * dot(n, worldUp);
+  float faceUpLen = length(faceUpRaw);
+  // On a horizontal face there is no downhill, and no streaking. Correct.
+  vec3 faceUp = faceUpLen > 1e-3 ? faceUpRaw / faceUpLen : vec3(0.0);
+  vec3 towardJoint = normalize(mas.yzw * kStoneAspect * kStoneScale + 1e-6);
+  float fromAbove = clamp(dot(towardJoint, faceUp), 0.0, 1.0);
+  float streak = fromAbove * exp(-mas.x * 5.5);
+
   float upward = clamp(n.y, 0.0, 1.0);
-  float t = mix(0.500, 0.440, upward) - inJoint * 0.10;
+  // The runoff carries the growth down with it.
+  float t = mix(0.500, 0.440, upward) - inJoint * 0.10 - streak * 0.055;
+  t -= (uMoss - 1.0) * 0.07;   // ?moss=
   float moss = smoothstep(t, t + 0.06, hf);
   // How close bare rock is to being overtaken. A clump standing proud throws a
   // little shade onto the stone beside it, and that contact darkening is most
@@ -1323,7 +1406,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   float grain = smoothstep(0.40, 0.60, fbm3Band(q * 9.0 + 71.3, lod * 9.0));
   float creased = 1.0 - abs(2.0 * fbm3Band(q * 3.3 + 5.9, lod * 3.3) - 1.0);
   float ridge = smoothstep(0.55, 1.0, creased);
-  vec3 stone = mix(vec3(0.098, 0.093, 0.086), vec3(0.156, 0.150, 0.137), grain);
+  vec3 stone = mix(vec3(0.093, 0.089, 0.082), vec3(0.148, 0.142, 0.130), grain);
   stone *= mix(0.86, 1.08, ridge);
   // ⚠️ EVERY BLOCK ITS OWN STONE. They were quarried separately and have
   // weathered separately for five hundred years, so no two are the same tone.
@@ -1334,6 +1417,11 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   stone *= mix(0.84, 1.16, stoneId);
   // Shaded by the moss standing over it — see nearMoss.
   stone *= mix(1.0, 0.70, nearMoss);
+  // ⚠️ WET STONE IS DARKER, and this is where the streaks become visible on
+  // bare rock rather than only as extra growth. Water fills the pores so less
+  // light scatters straight back out — the same reason a paving slab goes near
+  // black in the rain and pales again as it dries.
+  stone *= mix(1.0, 0.66, streak);
 
   // ── The moss ─────────────────────────────────────────────────────────────
   // ⚠️ MOSS IS NOT ONE GREEN, and this is the biggest single gain over a flat
@@ -1352,8 +1440,8 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // top. Real moss photographs at closer to two to one once you measure it
   // rather than trusting the eye, which exaggerates colour in dark places.
   const vec3 kDeep = vec3(0.042, 0.058, 0.034);
-  const vec3 kMid = vec3(0.072, 0.100, 0.046);
-  const vec3 kCrest = vec3(0.108, 0.132, 0.055);
+  const vec3 kMid = vec3(0.068, 0.094, 0.044);
+  const vec3 kCrest = vec3(0.099, 0.121, 0.051);
   vec3 mossC = mix(kDeep, kMid, smoothstep(0.0, 0.45, tip));
   mossC = mix(mossC, kCrest, smoothstep(0.45, 1.0, tip));
 
@@ -1361,7 +1449,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // is drier and browner than the rest. Without this every patch is the same
   // plant, which is the other half of why one-scale noise reads as camouflage.
   float age = fbm3Band(q * 0.8 + 55.1, lod * 0.8);
-  mossC = mix(mossC, mossC * vec3(1.16, 1.00, 0.80), smoothstep(0.50, 0.64, age));
+  mossC = mix(mossC, mossC * vec3(1.11, 1.00, 0.84), smoothstep(0.50, 0.64, age));
 
   // ── The lichen ───────────────────────────────────────────────────────────
   // ⚠️ IT TAKES WHAT THE MOSS DOES NOT. They compete for the same rock, and
@@ -1372,14 +1460,49 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   float bloom;
   float patchId;
   float crust = lichen(q * kLichenScale, lod * kLichenScale, bloom, patchId);
-  crust *= (1.0 - moss) * bevel;
+  crust *= (1.0 - moss) * bevel * uLichen;
 
   // Pale sage, and paler still at the growing edge, which is the newest and
   // thinnest part of the crust. Some colonies run yellow — a different species
   // on the same wall, which is what the references show.
-  vec3 crustC = mix(vec3(0.150, 0.158, 0.132), vec3(0.215, 0.222, 0.188), bloom);
-  crustC = mix(crustC, crustC * vec3(1.22, 1.06, 0.62),
-               smoothstep(0.62, 0.88, patchId));
+  vec3 crustC = mix(vec3(0.136, 0.143, 0.120), vec3(0.194, 0.200, 0.170), bloom);
+
+  // ⚠️ A REAL WALL CARRIES SEVERAL SPECIES, NOT ONE IN SEVERAL MOODS. Grey-
+  // green is the common crust, sulphur yellow and rusty orange are different
+  // organisms entirely, and a near-white one is common on exposed stone. Each
+  // colony picks one and keeps it, which is what makes them read as separate
+  // living things rather than as noise in a single colour.
+  vec3 species = crustC;
+  species = mix(species, crustC * vec3(1.16, 1.05, 0.60),
+                smoothstep(0.44, 0.56, patchId));
+  species = mix(species, crustC * vec3(1.26, 0.90, 0.52),
+                smoothstep(0.68, 0.78, patchId));
+  species = mix(species, crustC * vec3(1.10, 1.11, 1.09),
+                smoothstep(0.86, 0.94, patchId));
+  crustC = species;
+
+  // ⚠️ THE DARK MARGIN. Most crustose lichens ring themselves with a thin
+  // black line — the fungus reaching out ahead of the algae it farms, with no
+  // green in it yet. It is a small feature that does an unreasonable amount of
+  // work: it separates one colony from the rock and from its neighbours, and
+  // it is the detail that says "organism with a boundary" rather than "stain".
+  float margin = smoothstep(0.80, 0.97, bloom);
+  crustC *= mix(1.0, 0.30, margin);
+
+  // ⚠️ APOTHECIA — the fruiting cups. Small dark discs scattered over the
+  // crust, and on many species the most recognisable thing about them. Cheap
+  // by construction: they are far smaller than their cell, so the cell a point
+  // falls in is the only one that can hold the disc it is inside, and no
+  // neighbours need checking at all.
+  const float kFruitScale = 74.0;
+  vec3 fruitCell = floor(q * kFruitScale);
+  vec3 fruitAt = hash33(fruitCell + 71.1) * 0.6 + 0.2;
+  float fruitR = 0.10 + 0.11 * hash31(fruitCell + 13.7);
+  float fruitW = max(0.03, lod * kFruitScale);
+  float fruit = step(0.70, hash31(fruitCell + 91.3)) *
+                (1.0 - smoothstep(fruitR - fruitW, fruitR,
+                                  length(fract(q * kFruitScale) - fruitAt)));
+  crustC *= mix(1.0, 0.34, fruit);
 
   // ⚠️ A CRUST IS CRACKED INTO PLATES. As it dries and swells it splits into
   // small polygons with dark fissures between them — the feature that makes a
@@ -1403,9 +1526,15 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // at grazing angles. The deep parts and the joints hold the most water, so
   // they are the glossiest — which also means the sheen traces the masonry,
   // exactly like the growth does.
-  float damp = clamp(inJoint * 0.7 + (1.0 - tip) * 0.5, 0.0, 1.0);
+  float damp = clamp(inJoint * 0.6 + streak * 0.5 + (1.0 - tip) * 0.4, 0.0, 1.0);
   float mossRough = mix(0.94, 0.70, damp);
   s.roughness = max(mix(mix(0.66, 0.82, crust), mossRough, moss), kMinRoughness);
+  // ⚠️ AND WET IS DARKER, not merely shinier. Half of "damp" is the drop in
+  // brightness; changing only the gloss gives the odd plastic look of a surface
+  // that is somehow polished and dry at once.
+  s.albedo *= mix(1.0, mix(1.0, 0.70, damp), moss);
+  // Only the growth is a thicket. Stone and crust stay solids.
+  s.fuzz = moss * uFuzz;
   // Light does not reach the bottom of a clump. This is what turns shape into
   // depth; without it the relief reads as embossed metal.
   // Spanning the field's real range: smoothstep(0.0, 0.55, h) would sit almost
@@ -1423,6 +1552,8 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // cube uses was invented to give a near-black solid some shape to read by; a
   // surface with real colour in it does not need the help.
   s.f0 = vec3(0.04);
+  // ?lvl= — applied only to the material, so ?mat=0 stays a fixed reference.
+  s.albedo *= uLevel;
 
   // ⚠️ ONE SLOPE, TWO CAUSES: the stones' own shape and the growth on them.
   // Adding them before tilting the normal — rather than tilting twice — is what
@@ -1489,6 +1620,30 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) 
                         0.0, 1.0);
   direct += albedo * (1.0 / 3.14159265) * (1.0 - fresnel) *
             (lambert / max(nDotL, 1e-4));
+
+  // ⚠️ THE FUZZ LOBE — see D_Charlie. This is what makes the moss soft rather
+  // than merely dull, and it is the difference GGX cannot express at any
+  // roughness. Its energy sits at grazing angles, so it appears as a bright rim
+  // wherever the growth turns away from the eye, which is exactly what fuzzy
+  // things do in life. Tinted toward white, because scattering off the flanks
+  // of countless fibres washes the colour out — the pale bloom on velvet.
+  //
+  // ⚠️ ITS STRENGTH IS THE ONE NUMBER HERE THAT IS PURE JUDGEMENT, so it gets
+  // said out loud. The first version used 0.55 and washed the tint 60% toward
+  // white; the model was right and the volume was wrong. Measured on the cube,
+  // it left the average untouched and lifted the brightest tenth by 26% — which
+  // is exactly what a grazing-angle lobe does, and exactly the wrong thing
+  // here. Hot rims read as lush and freshly wet. Old stone in dim light is dark
+  // and low in contrast, and that is what reads as having been somewhere a long
+  // time. The cube also has to sit BEHIND the statement rather than shout over
+  // it. So: keep the softness, lose the bloom.
+  vec3 fuzzTint = mix(clamp(albedo * 5.5, 0.0, 1.0), vec3(1.0), 0.25);
+  if (s.fuzz > 0.0) {
+    float nDotH = max(dot(ns, h), 0.0);
+    direct += fuzzTint * (D_Charlie(0.35, nDotH) * V_Neubelt(nDotV, nDotL)) *
+              s.fuzz * 0.15 * s.occlusion;
+  }
+
   direct *= nDotL * 3.4 * visibility;
 
   // ⚠️ AND LIGHT THAT COMES THROUGH IT. Thin growth lit from behind glows —
@@ -1515,6 +1670,12 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) 
 
   vec3 ibl = envColor(r) * fssEss * grazeDamp;
   ibl += envColor(ns) * albedo * (fmsEms + (1.0 - fssEss));
+  // ⚠️ THE FUZZ HAS TO EXIST IN THE AMBIENT TOO, or the moss is soft only where
+  // the lamp reaches it and flat everywhere else — which is worse than not
+  // having the lobe at all, because the surface then changes character across
+  // the shadow line. Small, and damped by the grazing term like the rest of the
+  // indirect light.
+  ibl += envColor(ns) * fuzzTint * s.fuzz * 0.045 * grazeDamp;
 
   // Occlusion darkens only what arrives from everywhere — never the lamp. A
   // crease is hidden from the surroundings, not from a light it can see.

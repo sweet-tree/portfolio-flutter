@@ -36,6 +36,28 @@ const double kCubeSize = 0.26;
 /// which is the only comparison worth making.
 double get kMaterial => qDouble('mat', 1);
 
+/// The cube's tuning knobs, live on the deployed build.
+///
+/// ⚠️ THEY EXIST BECAUSE THE ALTERNATIVE IS WHAT WE DID ALL DAY: change a
+/// constant, rebuild for fifty seconds, look, change it again. Every one of
+/// these is a number that turned out to be wrong at least once.
+///
+/// ⚠️ AND [kLevel] AND [kFuzz] ARE SEPARATE ON PURPOSE. The cube went too
+/// bright and then too dark because both were moved together — the rim was the
+/// fault and the overall level was fine, but adjusted as one they could not be
+/// told apart.
+double get kLevel => qDouble('lvl', 1).clamp(0.2, 3.0);
+double get kFuzz => qDouble('fuzz', 1).clamp(0.0, 4.0);
+double get kMoss => qDouble('moss', 1).clamp(0.0, 2.0);
+double get kLichen => qDouble('lich', 1).clamp(0.0, 2.0);
+
+/// Stones across one face.
+///
+/// ⚠️ THE ONLY ONE WITH A REAL FLOOR AND CEILING RATHER THAN A RANGE. A face is
+/// about 55 pixels on a phone: under four stones stops reading as a wall, and
+/// over eight turns the joints to mush. The clamp is the constraint, not taste.
+double get kBlocks => qDouble('blocks', 3.4).clamp(3.0, 9.0);
+
 /// What fraction of full resolution the scene shader renders at.
 ///
 /// Fill rate is the cost model, so this is the one lever that reduces work
@@ -163,7 +185,12 @@ class _ScenePainter extends CustomPainter {
       // shading, not in the volumetric.
       ..setFloat(12, 0)
       // uMaterial — the cube's surface. `?mat=0` for the plain near-black cube.
-      ..setFloat(13, kMaterial);
+      ..setFloat(13, kMaterial)
+      ..setFloat(14, kLevel)
+      ..setFloat(15, kFuzz)
+      ..setFloat(16, kMoss)
+      ..setFloat(17, kLichen)
+      ..setFloat(18, kBlocks);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
