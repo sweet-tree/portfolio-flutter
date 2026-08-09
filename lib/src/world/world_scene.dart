@@ -24,6 +24,28 @@ import 'package:portfolio/src/world/world_camera.dart';
 const double kCubeX = 0.5;
 const double kCubeY = 0.34;
 
+/// The cube's own size in the world: its half-width, in the units the table is
+/// built in. The ledge runs from z = -0.95 in front to 3.1 behind.
+///
+/// ⚠️ THIS IS THE OBJECT. [kCubeSize] below is the CAMERA — it keeps every
+/// proportion identical and merely crops the view, which is the wrong lever for
+/// "make the cube bigger" and was tried first.
+///
+/// ⚠️ AND THE SURFACE DOES NOT CHANGE WITH IT: the material is defined on a
+/// cube of fixed size and scaled, so a larger cube is the same stone, larger —
+/// same blocks per face, each covering more pixels. That is the point of it on
+/// a phone.
+///
+/// ⚠️ THE LAYOUT IS DELIBERATELY UNTOUCHED. The statement is held clear of the
+/// cube's BASE, and the base rests on the table at any size — growing the cube
+/// extends it upward, away from the type. The energy does not move either; it
+/// spreads from the world origin rather than from the cube's surface. An
+/// earlier attempt "fixed" the layout to track this and was pure added risk.
+///
+/// Clamped below 0.95, where the ledge ends in front; larger and the cube would
+/// hang over the edge. `?cube=`.
+double get kCubeHalf => qDouble('cube', 0.70).clamp(0.30, 0.90);
+
 /// Cube size as a fraction of the viewport's shortest side.
 const double kCubeSize = 0.26;
 
@@ -190,7 +212,9 @@ class _ScenePainter extends CustomPainter {
       ..setFloat(15, kFuzz)
       ..setFloat(16, kMoss)
       ..setFloat(17, kLichen)
-      ..setFloat(18, kBlocks);
+      ..setFloat(18, kBlocks)
+      // uCubeHalf — the cube's own world size. See kCubeHalf.
+      ..setFloat(19, kCubeHalf);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);

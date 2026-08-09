@@ -69,15 +69,27 @@ uniform float uFuzz;     // ?fuzz=  the soft rim on the growth
 uniform float uMoss;     // ?moss=  how much of the surface is growth
 uniform float uLichen;   // ?lich=  how much crust
 uniform float uBlocks;   // ?blocks= stones across one face
+uniform float uCubeHalf; // ?cube=   the cube's own size in the world
 
 out vec4 fragColor;
 
 // ── World ───────────────────────────────────────────────────────────────────
 
-const float kHalfSize = 0.55;
-const vec3 kHalf = vec3(kHalfSize);
-// The cube's centre is one half-height up, so its BASE rests on y = 0.
-const vec3 kCubeOrigin = vec3(0.0, kHalfSize, 0.0);
+/// The size the cube's MATERIAL WAS AUTHORED AT. Every threshold, block count
+/// and pattern scale in cubeSurface was tuned against a cube this big, and —
+/// more to the point — tuned against EACH OTHER.
+const float kRefHalf = 0.55;
+
+// ⚠️ THE CUBE'S SIZE IS A UNIFORM — `uCubeHalf`, driven by `?cube=`. GLSL will
+// not initialise a global from a uniform, so the two values derived from it are
+// functions; they fold to nothing.
+//
+// The centre sits one half-height up, so the BASE rests on y = 0 at any size.
+// Growing the cube lifts its top, never its bottom, which is both what a larger
+// stone on a table does and why the LAYOUT needs no changes: the statement is
+// held clear of the cube's base, and the base does not move.
+vec3 cubeHalf() { return vec3(uCubeHalf); }
+vec3 cubeOrigin() { return vec3(0.0, uCubeHalf, 0.0); }
 
 // Three-quarter camera, offset to the side. The straight-on version put the
 // ledge edge on a horizontal, which was geometrically what was asked for and
@@ -634,7 +646,7 @@ vec4 flyingEnergy(vec3 ro, vec3 rd, float tMax) {
     if (d > 0.001) {
       // Brighter nearer the source, as if lit from the cube rather than
       // uniformly emissive.
-      float toSource = length(p - kCubeOrigin);
+      float toSource = length(p - cubeOrigin());
       float energy = exp(-toSource * 0.22);
       float sigma = d * 1.9;
       float absorbed = 1.0 - exp(-sigma * stepSize);
@@ -813,7 +825,7 @@ float tableTrace(vec3 ro, vec3 rd) {
 /// Exact ray/box by the slab method, in the box's own frame.
 vec2 boxIntersectLocal(vec3 ro, vec3 rd, out vec3 normal) {
   vec3 m = 1.0 / rd;
-  vec3 k = abs(m) * kHalf;
+  vec3 k = abs(m) * cubeHalf();
   vec3 t1 = -m * ro - k;
   vec3 t2 = -m * ro + k;
   float tN = max(max(t1.x, t1.y), t1.z);
@@ -828,7 +840,7 @@ vec2 boxIntersectLocal(vec3 ro, vec3 rd, out vec3 normal) {
 vec2 cubeIntersect(vec3 ro, vec3 rd, float spin, out vec3 normal) {
   mat3 toLocal = rotY(-spin);
   vec3 nl;
-  vec2 t = boxIntersectLocal(toLocal * (ro - kCubeOrigin), toLocal * rd, nl);
+  vec2 t = boxIntersectLocal(toLocal * (ro - cubeOrigin()), toLocal * rd, nl);
   normal = rotY(spin) * nl;
   return t;
 }
@@ -1191,7 +1203,7 @@ vec2 envDFG(float nDotV, float roughness) {
 /// resolution the scene is being rendered at — `uCubeUnit` already carries the
 /// render scale.
 float cubeLod() {
-  return (length(kCubeOrigin - kEye) / kFocal) / uCubeUnit;
+  return (length(cubeOrigin() - kEye) / kFocal) / uCubeUnit;
 }
 
 /// Everything the lighting needs to know about the surface at one point.
@@ -1260,7 +1272,26 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // space has no seams: a clump that reaches the edge of one face continues onto
   // the next, the way growth on a real rock does. Texturing face by face has to
   // fight that and always shows a join along the edges.
-  vec3 q = rotY(-spin) * (p - kCubeOrigin);
+  // ⚠️ THE MATERIAL LIVES ON A CUBE OF FIXED SIZE, whatever size the cube is.
+  //
+  // Everything below — the block count, the moss thresholds, the lichen radii,
+  // the crack spacing — was tuned against a cube of kRefHalf, and tuned against
+  // EACH OTHER: the crust is smaller than a block, the cracks smaller than the
+  // crust, the fringe finer than a clump. Normalising the sample space here
+  // makes resizing a PURE SCALE — the same stone, larger — so those
+  // relationships survive.
+  //
+  // ⚠️ THE ALTERNATIVE IS ALSO DEFENSIBLE AND IS ONE LINE: drop this scaling
+  // and a larger cube gets MORE blocks of the same real-world size, the way a
+  // longer wall does, since stones are quarried at human scale. It was not
+  // chosen because the point of resizing here is legibility on a phone, and
+  // that only improves if each block gets more pixels.
+  //
+  // The pixel footprint scales with it, or the detail fading would be measuring
+  // against the wrong yardstick.
+  float mScale = kRefHalf / uCubeHalf;
+  vec3 q = rotY(-spin) * (p - cubeOrigin()) * mScale;
+  lod *= mScale;
 
   // ⚠️ THE MASONRY IS SAMPLED WITH `q`, EVERYTHING FINE WITH `qf`.
   //
@@ -1289,7 +1320,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod,
   // Cells per world unit, from the count of stones across a face — the cube is
   // two half-sizes wide. Stated as a count because that is the thing anyone
   // actually has an opinion about.
-  float kStoneScale = uBlocks / (kHalfSize * 2.0);
+  float kStoneScale = uBlocks / (kRefHalf * 2.0);
   const vec3 kStoneAspect = vec3(1.0, 1.7, 1.0);
   const float kJointWidth = 0.045;
   // How deep a joint is cut, in world units — the cube is 1.1 across, so this
@@ -2026,10 +2057,10 @@ void main() {
   vec3 nCube;
   vec2 tCube = cubeIntersect(kEye, rd, spin, nCube);
 
-  vec3 toCentre = kCubeOrigin - kEye;
+  vec3 toCentre = cubeOrigin() - kEye;
   float tc = max(dot(toCentre, rd), 0.0);
-  vec3 localNear = rotY(-spin) * (kEye + rd * tc - kCubeOrigin);
-  vec3 qn = abs(localNear) - kHalf;
+  vec3 localNear = rotY(-spin) * (kEye + rd * tc - cubeOrigin());
+  vec3 qn = abs(localNear) - cubeHalf();
   float nearSurface =
       length(max(qn, 0.0)) + min(max(qn.x, max(qn.y, qn.z)), 0.0);
 
@@ -2038,8 +2069,8 @@ void main() {
 
   float edgeDist = 1e9;
   if (tCube.x > 0.0) {
-    vec3 hp = abs(rotY(-spin) * (kEye + rd * tCube.x - kCubeOrigin));
-    vec3 d3 = kHalf - hp;
+    vec3 hp = abs(rotY(-spin) * (kEye + rd * tCube.x - cubeOrigin()));
+    vec3 d3 = cubeHalf() - hp;
     float lo = min(d3.x, min(d3.y, d3.z));
     float hi = max(d3.x, max(d3.y, d3.z));
     edgeDist = d3.x + d3.y + d3.z - lo - hi;
