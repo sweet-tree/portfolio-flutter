@@ -95,6 +95,7 @@ uniform float uOff;
 //   1  the cube's SHADING ONLY, into a texture to be reused
 //   2  the whole scene, reading those textures instead of tracing
 //   3  the LIGHT MAP: the cast shadow and contact darkening over the table
+//   4  the GALAXY BAND alone, at a fraction of the resolution
 //
 // ⚠️ THE CACHE HOLDS THE SHADING, NOT THE COVERAGE, and that is deliberate.
 // The coverage loop also produces the offset that tells the backdrop where in
@@ -111,6 +112,10 @@ uniform sampler2D uCubeLayer;
 /// The cast shadow and the contact darkening, baked over the table's surface.
 /// Red is how much of the light reaches a point, green how open it is.
 uniform sampler2D uLightMap;
+
+/// The galaxy's diffuse glow, and how densely it packs stars. Smooth
+/// everywhere, so it is rendered small and read back scaled up.
+uniform sampler2D uBandMap;
 
 out vec4 fragColor;
 
@@ -571,6 +576,37 @@ vec3 starLayer(vec3 dir, float density, float size, float brightness,
     }
   }
   return acc;
+}
+
+/// The resolved stars, given a band that has already been worked out.
+///
+/// ⚠️ THE BAND AND THE STARS WANT OPPOSITE TREATMENT, which is why they are
+/// separated. The band is a diffuse glow with no edge anywhere in it — four
+/// five-octave noise fields, and by far the more expensive half — while the
+/// stars are single sharp points that would smear into nothing if softened.
+/// Rendering the band at a fraction of the resolution is invisible; rendering
+/// the stars there would not be.
+///
+/// The star density comes from the band because it IS the band: the galaxy is
+/// bright where its stars are crowded, and dust lanes darken the glow and hide
+/// the stars behind them at the same time. One field, both effects, which is
+/// what stops it reading as a painted stripe with a scatter laid over it.
+vec3 starsFromBand(vec3 dir, vec3 glow, float starDensity) {
+  float turn = uTime * 0.010 + uCamera * 0.085;
+  vec3 d = normalize(rotY(turn) * dir);
+  vec3 c = starLayer(d, 42.0, 0.105, 3.1, starDensity);
+  c += starLayer(d, 95.0, 0.070, 1.7, starDensity);
+  c += starLayer(d, 200.0, 0.048, 0.85, starDensity);
+  c += glow;
+  return c + vec3(0.02138, 0.02595, 0.03425);
+}
+
+/// The band alone, for the small pass. `a` carries the star density, remapped
+/// into 0..1 so it survives an 8-bit channel.
+vec4 bandOnly(vec3 dir) {
+  float turn = uTime * 0.010 + uCamera * 0.085;
+  vec4 g = galaxyBand(normalize(rotY(turn) * dir));
+  return vec4(g.rgb, (g.a - 1.0) / 2.6);
 }
 
 vec3 starsColor(vec3 dir) {
@@ -2115,7 +2151,9 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
                        uSky);
     }
     if (uStars > 0.0 && !isOff(32.0)) {
-      background = mix(background, starsColor(rd), uStars * skyAmount);
+      vec4 band = texture(uBandMap, uvScreen);
+      vec3 sky = starsFromBand(rd, band.rgb, band.a * 2.6 + 1.0);
+      background = mix(background, sky, uStars * skyAmount);
     }
   }
 
@@ -2568,6 +2606,12 @@ void main() {
     );
     backdropRd = normalize(fwd * kFocal + right * uvB.x + up * uvB.y);
   }
+  // The band pass. Smooth everywhere, so it runs on a fraction of the pixels.
+  if (uLayer > 3.5) {
+    fragColor = bandOnly(rd);
+    return;
+  }
+
   // ⚠️ THE LIGHT MAP PASS. Every texel is a place on the table's surface rather
   // than a place on the screen, which is the whole point: the table stretches
   // away from the camera, so a screen-shaped cache would be dense where it is

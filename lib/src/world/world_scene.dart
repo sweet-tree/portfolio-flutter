@@ -142,6 +142,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _layerShader;
   /// A third instance, for the light map — same reasoning as _layerShader.
   ui.FragmentShader? _lightShader;
+  /// A fourth, for the band — same reasoning again.
+  ui.FragmentShader? _bandShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -156,6 +158,7 @@ class _WorldSceneState extends State<WorldScene>
     _shader = Shaders.scene?.fragmentShader();
     _layerShader = Shaders.scene?.fragmentShader();
     _lightShader = Shaders.scene?.fragmentShader();
+    _bandShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -171,6 +174,7 @@ class _WorldSceneState extends State<WorldScene>
     _shader?.dispose();
     _layerShader?.dispose();
     _lightShader?.dispose();
+    _bandShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     super.dispose();
@@ -181,7 +185,11 @@ class _WorldSceneState extends State<WorldScene>
     final shader = _shader;
     final layerShader = _layerShader;
     final lightShader = _lightShader;
-    if (shader == null || layerShader == null || lightShader == null) {
+    final bandShader = _bandShader;
+    if (shader == null ||
+        layerShader == null ||
+        lightShader == null ||
+        bandShader == null) {
       return const ColoredBox(color: Palette.bg);
     }
     return CustomPaint(
@@ -189,6 +197,7 @@ class _WorldSceneState extends State<WorldScene>
         shader: shader,
         layerShader: layerShader,
         lightShader: lightShader,
+        bandShader: bandShader,
         lightCache: _lightCache,
         time: _time,
         camera: widget.camera.position,
@@ -296,6 +305,7 @@ class _ScenePainter extends CustomPainter {
     required this.shader,
     required this.layerShader,
     required this.lightShader,
+    required this.bandShader,
     required this.lightCache,
     required this.time,
     required this.camera,
@@ -307,6 +317,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader shader;
   final ui.FragmentShader layerShader;
   final ui.FragmentShader lightShader;
+  final ui.FragmentShader bandShader;
   final double time;
   final double camera;
   final double velocity;
@@ -337,16 +348,22 @@ class _ScenePainter extends CustomPainter {
     if (low.isEmpty) return;
 
     // The cube belongs to the first location, so travelling moves it off
-    // screen with its section. Everything is derived from the LOW size, so
-    // the composition is identical once upscaled.
-    final cubeX = low.width * (kCubeX - camera);
-    final cubeY = low.height * kCubeY;
-    final unit = low.shortestSide * kCubeSize;
+    // screen with its section — which falls out of the maths in configure()
+    // rather than needing to be animated. Everything there is derived from the
+    // size of the pass being configured, so the composition is identical at any
+    // of them once upscaled.
 
     // Every uniform except the layer mode, which the caller supplies. Written
     // once and applied to both shaders so the two passes cannot drift apart.
     void configure(ui.FragmentShader s, double layer, [Size? at]) {
       final target = at ?? low;
+      // ⚠️ DERIVED FROM THIS PASS'S OWN SIZE. The ray for a pixel is built from
+      // where the cube's origin lands and how many pixels a world unit spans,
+      // both in the CURRENT target's pixels. A smaller pass that inherited the
+      // full-size numbers would aim every ray somewhere else.
+      final tCubeX = target.width * (kCubeX - camera);
+      final tCubeY = target.height * kCubeY;
+      final tUnit = target.shortestSide * kCubeSize;
       // Flat indices in declaration order from the .frag.
       s
         ..setFloat(0, target.width)
@@ -354,9 +371,9 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(2, time)
         ..setFloat(3, camera)
         ..setFloat(4, velocity)
-        ..setFloat(5, cubeX)
-        ..setFloat(6, cubeY)
-        ..setFloat(7, unit)
+        ..setFloat(5, tCubeX)
+        ..setFloat(6, tCubeY)
+        ..setFloat(7, tUnit)
         // Indices follow scene.frag's declaration order, including uniforms
         // that are currently unused — the layout keeps them, so deleting one
         // silently shifts every index after it.
@@ -406,6 +423,8 @@ class _ScenePainter extends CustomPainter {
         ..setImageSampler(0, cache.image ?? cache.placeholder,
             filterQuality: FilterQuality.low)
         ..setImageSampler(1, lightCache.image ?? cache.placeholder,
+            filterQuality: FilterQuality.low)
+        ..setImageSampler(2, cache.placeholder,
             filterQuality: FilterQuality.low);
       final rec = ui.PictureRecorder();
       Canvas(rec)
@@ -417,6 +436,31 @@ class _ScenePainter extends CustomPainter {
       lightCache.image = fresh;
       lightCache.signature = wantLight;
     }
+
+    // ── The galaxy band, at a quarter of each side ──────────────────────────
+    //
+    // ⚠️ REDRAWN EVERY FRAME, UNLIKE THE OTHER TWO. The sky turns, slowly, so
+    // this is not a thing that can be cached — it is a thing that does not need
+    // resolution. A sixteenth of the pixels, and no edge anywhere in it to give
+    // that away.
+    final bandLow = Size(
+      (low.width * 0.25).roundToDouble(),
+      (low.height * 0.25).roundToDouble(),
+    );
+    configure(bandShader, 4, bandLow);
+    bandShader
+      ..setImageSampler(0, cache.image ?? cache.placeholder,
+          filterQuality: FilterQuality.low)
+      ..setImageSampler(1, lightCache.image ?? cache.placeholder,
+          filterQuality: FilterQuality.low)
+      ..setImageSampler(2, cache.placeholder, filterQuality: FilterQuality.low);
+    final bandRec = ui.PictureRecorder();
+    Canvas(bandRec)
+        .drawRect(Offset.zero & bandLow, Paint()..shader = bandShader);
+    final bandPic = bandRec.endRecording();
+    final bandImage =
+        bandPic.toImageSync(bandLow.width.toInt(), bandLow.height.toInt());
+    bandPic.dispose();
 
     // ── The cube's shading, redrawn only when something it depends on moves ──
     //
@@ -433,7 +477,8 @@ class _ScenePainter extends CustomPainter {
         ..setImageSampler(0, cache.image ?? cache.placeholder,
             filterQuality: FilterQuality.low)
         ..setImageSampler(1, lightCache.image!,
-            filterQuality: FilterQuality.low);
+            filterQuality: FilterQuality.low)
+        ..setImageSampler(2, bandImage, filterQuality: FilterQuality.low);
       final layerRecorder = ui.PictureRecorder();
       Canvas(layerRecorder)
           .drawRect(Offset.zero & low, Paint()..shader = layerShader);
@@ -454,7 +499,8 @@ class _ScenePainter extends CustomPainter {
     configure(shader, 2); // uLayer: read the cube and the light from textures
     shader
       ..setImageSampler(0, cache.image!, filterQuality: FilterQuality.low)
-      ..setImageSampler(1, lightCache.image!, filterQuality: FilterQuality.low);
+      ..setImageSampler(1, lightCache.image!, filterQuality: FilterQuality.low)
+      ..setImageSampler(2, bandImage, filterQuality: FilterQuality.low);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
@@ -473,6 +519,7 @@ class _ScenePainter extends CustomPainter {
 
     image.dispose();
     picture.dispose();
+    bandImage.dispose();
   }
 
   @override
