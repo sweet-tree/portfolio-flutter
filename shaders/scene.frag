@@ -994,7 +994,7 @@ float cellWeight(vec3 cell) {
   return hash31(cell + 7.13) * 0.30;
 }
 
-vec4 masonry(vec3 p, out float stone) {
+vec4 masonry(vec3 p, out float stone, out vec3 stoneCell) {
   vec3 ip = floor(p);
   vec3 fp = fract(p);
 
@@ -1019,7 +1019,12 @@ vec4 masonry(vec3 p, out float stone) {
       }
     }
   }
-  stone = hash31(ip + nearestCell + 3.77);
+  // The block's own identity. Anything that must be constant across one stone
+  // and change at its joints hashes from this — its tone today, and the dressing
+  // of its face below. It is handed back rather than kept private because the
+  // carving will want it too: a glyph belongs to a block, not to the wall.
+  stoneCell = ip + nearestCell;
+  stone = hash31(stoneCell + 3.77);
 
   // Pass two: the closest bisecting plane between that point and its
   // neighbours. Centred on the NEAREST cell rather than on this one, or the
@@ -1049,6 +1054,63 @@ vec4 masonry(vec3 p, out float stone) {
     }
   }
   return vec4(edge, dir);
+}
+
+/// Crustose lichen: flat pale discs growing outward from a point.
+///
+/// ⚠️ SCATTERED DISCS, NOT A TILING — and that is the whole difference from the
+/// masonry above, which uses the same machinery. Cellular noise normally
+/// divides ALL of space between its points, so every spot belongs to some cell.
+/// Lichen does not work that way: a spore lands, a colony spreads outward as a
+/// rough circle, and the rock between colonies is simply bare. So most cells
+/// host nothing, and the ones that do are measured by plain distance from their
+/// own centre against their own radius — inside is lichen, outside is stone.
+///
+/// ⚠️ AND IT IS A SECOND ORGANISM, NOT A SECOND DENSITY OF THE FIRST. Two
+/// species competing for the same rock is what a real wall looks like, and it
+/// reads as alive in a way one thing at two strengths never does: lichen is
+/// flat, pale, hard-edged and crusty where moss is deep, dark, soft and fuzzy.
+/// It also takes the ground moss leaves alone — the drier, more exposed faces —
+/// which is why it is weighted against the moss below rather than added to it.
+///
+/// Returns coverage; `bloom` comes back as how near this is to a colony's
+/// growing edge, which is where a crust is palest and slightly raised.
+float lichen(vec3 p, float lod, out float bloom, out float patchId) {
+  vec3 ip = floor(p);
+  vec3 fp = fract(p);
+
+  float best = 8.0;
+  vec3 bestCell = vec3(0.0);
+  for (int k = -1; k <= 1; k++) {
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec3 cell = ip + vec3(float(i), float(j), float(k));
+        // Most of the rock never gets colonised.
+        if (hash31(cell + 41.9) < 0.42) continue;
+        vec3 r = vec3(float(i), float(j), float(k)) + hash33(cell) - fp;
+        // Each colony has spread a different distance from where it started.
+        float radius = 0.26 + 0.40 * hash31(cell + 5.31);
+        float d = length(r) / radius;
+        if (d < best) {
+          best = d;
+          bestCell = cell;
+        }
+      }
+    }
+  }
+  patchId = hash31(bestCell + 3.11);
+
+  // ⚠️ COLONIES ARE LOBED, NOT CIRCULAR. A crust spreads faster where the rock
+  // suits it and stalls where it does not, so the outline is a rough rosette
+  // with fingers and bays — never the clean disc that plain distance gives.
+  // Warping the distance itself, rather than the shape, keeps the whole colony
+  // consistent: the same lobe reaches out on every frame and at every size.
+  best *= 1.0 + (fbm3Band(p * 2.2 + 61.7, lod * 2.2) - 0.5) * 0.55;
+
+  // A crust has a HARD edge, unlike moss — but never harder than a pixel.
+  float soft = max(0.10, lod * 4.0);
+  bloom = smoothstep(0.55, 1.0, best);
+  return 1.0 - smoothstep(1.0 - soft, 1.0, best);
 }
 
 /// The split-sum environment BRDF, as maths instead of a lookup texture.
@@ -1145,7 +1207,26 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   const float kJointDepth = 0.006;
 
   float stoneId;
-  vec4 mas = masonry(q * kStoneAspect * kStoneScale, stoneId);
+  vec3 stoneCell;
+  vec4 mas = masonry(q * kStoneAspect * kStoneScale, stoneId, stoneCell);
+
+  // ⚠️ EVERY BLOCK IS DRESSED SLIGHTLY DIFFERENTLY, and this is the thing that
+  // most makes a wall read as built rather than printed.
+  //
+  // These stones were pecked flat by hand with hammerstones, one at a time, so
+  // no two faces end up in quite the same plane — each sits a degree or three
+  // off its neighbours. That is why raking light across a real wall picks out
+  // individual stones: not because they are different colours, but because they
+  // are pointing in slightly different directions and so catch the light
+  // differently. Without it a wall is one flat surface with lines drawn on it,
+  // which is the tell that no amount of colour variation hides.
+  //
+  // Constant across a block and changing abruptly at its joints, which is
+  // exactly right — and the change is hidden in the chamfer that is already
+  // there. The component pointing out of the face is discarded later with the
+  // rest of the slope, so a random direction is all this needs to be.
+  const float kBlockDressing = 0.13;   // about three degrees, typically
+  vec3 blockTilt = (hash33(stoneCell + 19.3) - 0.5) * kBlockDressing;
 
   // ⚠️ A JOINT NEVER NARROWER THAN A PIXEL. Below that it stops being a line
   // and becomes a flicker — the same reasoning as the band limiting on the
@@ -1213,9 +1294,23 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   //
   // The face thresholds are raised at the same time. If the blocks were as
   // covered as the joints there would be no wall to see, only moss.
+  // ⚠️ THE EDGE OF A MOSS PATCH IS RAGGED, and a smooth boundary is the most
+  // computer-looking thing a procedural surface does. Real moss ends in
+  // individual shoots poking out past the mass, so the edge is fringed at a
+  // scale far finer than the clumps themselves. Nudging the height with a fine
+  // field JUST BEFORE the threshold fringes the outline without disturbing the
+  // relief — the slope below still comes from the unfringed field, because this
+  // is about where the moss stops, not about its shape.
+  float fringe = fbm3Band(q * 34.0 + 77.3, lod * 34.0);
+  float hf = h + (fringe - 0.5) * 0.055;
+
   float upward = clamp(n.y, 0.0, 1.0);
   float t = mix(0.500, 0.440, upward) - inJoint * 0.10;
-  float moss = smoothstep(t, t + 0.06, h);
+  float moss = smoothstep(t, t + 0.06, hf);
+  // How close bare rock is to being overtaken. A clump standing proud throws a
+  // little shade onto the stone beside it, and that contact darkening is most
+  // of what makes growth sit ON a surface rather than in it.
+  float nearMoss = smoothstep(t - 0.09, t, hf) * (1.0 - moss);
 
   // ── The stone ────────────────────────────────────────────────────────────
   // Not a flat grey. Rock has grain, and it has ridges where it has weathered
@@ -1237,6 +1332,8 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // trying to avoid. Hashed from which cell this is, so a block is one colour
   // all the way to its own edges.
   stone *= mix(0.84, 1.16, stoneId);
+  // Shaded by the moss standing over it — see nearMoss.
+  stone *= mix(1.0, 0.70, nearMoss);
 
   // ── The moss ─────────────────────────────────────────────────────────────
   // ⚠️ MOSS IS NOT ONE GREEN, and this is the biggest single gain over a flat
@@ -1266,9 +1363,49 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   float age = fbm3Band(q * 0.8 + 55.1, lod * 0.8);
   mossC = mix(mossC, mossC * vec3(1.16, 1.00, 0.80), smoothstep(0.50, 0.64, age));
 
+  // ── The lichen ───────────────────────────────────────────────────────────
+  // ⚠️ IT TAKES WHAT THE MOSS DOES NOT. They compete for the same rock, and
+  // lichen wins on the drier, more exposed ground — the open block faces, not
+  // the wet joints. Weighting it against the moss and against the joints is
+  // what keeps the two from reading as one speckled mess.
+  const float kLichenScale = 11.0;
+  float bloom;
+  float patchId;
+  float crust = lichen(q * kLichenScale, lod * kLichenScale, bloom, patchId);
+  crust *= (1.0 - moss) * bevel;
+
+  // Pale sage, and paler still at the growing edge, which is the newest and
+  // thinnest part of the crust. Some colonies run yellow — a different species
+  // on the same wall, which is what the references show.
+  vec3 crustC = mix(vec3(0.150, 0.158, 0.132), vec3(0.215, 0.222, 0.188), bloom);
+  crustC = mix(crustC, crustC * vec3(1.22, 1.06, 0.62),
+               smoothstep(0.62, 0.88, patchId));
+
+  // ⚠️ A CRUST IS CRACKED INTO PLATES. As it dries and swells it splits into
+  // small polygons with dark fissures between them — the feature that makes a
+  // crustose lichen unmistakable close up, and the reason a smooth pale patch
+  // reads as a paint stain instead. It is the same cell pattern as the wall
+  // itself, three octaves smaller: the machinery is identical, only the scale
+  // and the meaning change. Its slope comes back analytically, so the fissures
+  // carry real relief for nothing.
+  const float kAreoleScale = 32.0;
+  float areoleId;
+  vec3 areoleCell;
+  vec4 areole = masonry(q * kAreoleScale, areoleId, areoleCell);
+  float fissureW = max(0.10, lod * kAreoleScale * 1.6);
+  float plate = smoothstep(0.0, fissureW, areole.x);
+  crustC *= mix(0.62, 1.06, plate) * mix(0.90, 1.10, areoleId);
+
   CubeSurface s;
-  s.albedo = mix(stone, mossC, moss);
-  s.roughness = max(mix(0.66, 0.94, moss), kMinRoughness);
+  s.albedo = mix(mix(stone, crustC, crust), mossC, moss);
+  // ⚠️ MOSS IN A CLOUD FOREST IS WET, and wet is not matte. A fully rough
+  // surface reads as dust or felt; a damp one keeps a soft sheen that appears
+  // at grazing angles. The deep parts and the joints hold the most water, so
+  // they are the glossiest — which also means the sheen traces the masonry,
+  // exactly like the growth does.
+  float damp = clamp(inJoint * 0.7 + (1.0 - tip) * 0.5, 0.0, 1.0);
+  float mossRough = mix(0.94, 0.70, damp);
+  s.roughness = max(mix(mix(0.66, 0.82, crust), mossRough, moss), kMinRoughness);
   // Light does not reach the bottom of a clump. This is what turns shape into
   // depth; without it the relief reads as embossed metal.
   // Spanning the field's real range: smoothstep(0.0, 0.55, h) would sit almost
@@ -1297,7 +1434,13 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // steepest. The first attempt used 26, which works out at 89 degrees, the
   // normal lying flat, and turned every clump into a black hole. Stone keeps a
   // fraction of it, because worn rock is not smooth either.
-  vec3 slope = stoneSlope + (grad / e) * mix(0.035, 0.150, moss);
+  // The fissures between the crust's plates, shallow and only where crust is.
+  float a1 = clamp(areole.x / fissureW, 0.0, 1.0);
+  vec3 areoleSlope = (-areole.yzw) * (6.0 * a1 * (1.0 - a1) / fissureW) *
+                     kAreoleScale * 0.0016 * crust;
+
+  vec3 slope = blockTilt + stoneSlope + areoleSlope +
+               (grad / e) * mix(0.035, 0.150, moss);
   vec3 alongFace = slope - n * dot(slope, n);
   s.normal = normalize(n - alongFace);
   return s;
