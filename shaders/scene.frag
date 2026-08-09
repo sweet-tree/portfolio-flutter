@@ -945,6 +945,112 @@ float mossHeight(vec3 q, float lod) {
   return spread * 0.50 + clump * 0.34 + shoot * 0.16;
 }
 
+// ── Inca polygonal masonry ──────────────────────────────────────────────────
+//
+// The wall at Sacsayhuamán: irregular many-sided blocks, each one bulging
+// slightly, fitted so tightly the joints are hairlines. It is one of the few
+// real-world patterns a formula produces NATIVELY rather than imitates — space
+// divided into cells around scattered points is exactly what that masonry is.
+//
+// ⚠️ AND IT IS WHY THE MOSS BELONGS WHERE IT IS. A joint is recessed, so it
+// holds water, so growth gathers in it. The stonework and the moss are not two
+// effects layered on each other; one is the reason for the other, which is
+// what makes both read as real instead of applied.
+
+vec3 hash33(vec3 p) {
+  return vec3(hash31(p), hash31(p + 11.317), hash31(p + 27.713));
+}
+
+/// Distance to the nearest JOINT, and the direction that distance grows in.
+///
+/// ⚠️ THE TRUE DISTANCE TO THE CELL BOUNDARY, not the usual difference between
+/// the nearest and second-nearest points. That shortcut is not a distance: it
+/// widens wherever three blocks meet, so every corner blooms into a blob and
+/// the joints stop being hairlines — which is precisely the quality this wall
+/// is famous for. The exact version (Inigo Quilez's) takes a second pass:
+/// having found the closest feature point, measure to the plane that bisects it
+/// and each neighbour. The smallest of those IS the cell boundary.
+///
+/// ⚠️ THE SECOND PASS ALSO HANDS BACK THE GRADIENT FOR FREE. The distance is
+/// measured against a plane, so it grows along that plane's normal — no extra
+/// samples needed to find the slope. That matters here: sampling this field
+/// three more times for a gradient would triple the most expensive thing in the
+/// shader. Returned as `yzw`; the field's slope is its negative.
+///
+/// `w` carries a hash of which stone this is, for per-block variation.
+/// ⚠️ THE CELLS ARE WEIGHTED, WHICH IS WHAT GIVES BLOCKS DIFFERENT SIZES.
+///
+/// Plain cellular noise makes cells of roughly one size, and a wall of
+/// same-sized stones reads as tiling however irregular each one is. The wall in
+/// the reference does the opposite: a few enormous blocks with small ones packed
+/// around them, and that mixture is most of what makes it striking.
+///
+/// Giving each point a radius and subtracting it from the distance is the
+/// standard way — a point with a larger radius claims more space. The exact
+/// boundary between two weighted points is a curve rather than a plane, but
+/// shifting the plane by half the difference in radii is its tangent at the
+/// closest approach, and at these scales the difference is far under a pixel.
+float cellWeight(vec3 cell) {
+  return hash31(cell + 7.13) * 0.30;
+}
+
+vec4 masonry(vec3 p, out float stone) {
+  vec3 ip = floor(p);
+  vec3 fp = fract(p);
+
+  // Pass one: which feature point claims this spot.
+  float nearest = 8.0;
+  vec3 toNearest = vec3(0.0);
+  vec3 nearestCell = vec3(0.0);
+  float nearestW = 0.0;
+  for (int k = -1; k <= 1; k++) {
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec3 g = vec3(float(i), float(j), float(k));
+        vec3 r = g + hash33(ip + g) - fp;
+        float w = cellWeight(ip + g);
+        float d = length(r) - w;
+        if (d < nearest) {
+          nearest = d;
+          toNearest = r;
+          nearestCell = g;
+          nearestW = w;
+        }
+      }
+    }
+  }
+  stone = hash31(ip + nearestCell + 3.77);
+
+  // Pass two: the closest bisecting plane between that point and its
+  // neighbours. Centred on the NEAREST cell rather than on this one, or the
+  // neighbourhood misses blocks whose points lie just outside it.
+  float edge = 8.0;
+  vec3 dir = vec3(0.0, 1.0, 0.0);
+  for (int k = -1; k <= 1; k++) {
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec3 g = nearestCell + vec3(float(i), float(j), float(k));
+        vec3 r = g + hash33(ip + g) - fp;
+        vec3 diff = r - toNearest;
+        float sep = dot(diff, diff);
+        // Skip the nearest point itself; it has no plane against itself.
+        if (sep > 1e-5) {
+          vec3 nrm = diff * inversesqrt(sep);
+          // The plane sits at the midpoint, shifted toward whichever stone has
+          // the smaller claim.
+          float d = dot(0.5 * (toNearest + r), nrm) +
+                    (nearestW - cellWeight(ip + g)) * 0.5;
+          if (d < edge) {
+            edge = d;
+            dir = nrm;
+          }
+        }
+      }
+    }
+  }
+  return vec4(edge, dir);
+}
+
 /// The split-sum environment BRDF, as maths instead of a lookup texture.
 ///
 /// ⚠️ WITHOUT THIS, A VERY ROUGH SURFACE COMES OUT TOO DARK. A rough material
@@ -1019,6 +1125,50 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // fight that and always shows a join along the edges.
   vec3 q = rotY(-spin) * (p - kCubeOrigin);
 
+  // ── The masonry ──────────────────────────────────────────────────────────
+  //
+  // ⚠️ THE BLOCK COUNT IS SET BY THE PHONE, NOT BY THE REFERENCE. A face is
+  // about 55 pixels there. Five blocks across gives 11 pixels each and a joint
+  // you can see; twenty would be mush. The wall at Sacsayhuamán happens to be
+  // about that coarse, so the constraint and the reference agree — but if they
+  // disagreed the phone would win.
+  //
+  // Stretched in y so blocks are wider than they are tall, which is what
+  // courses of masonry look like whatever the culture: gravity settles stones
+  // onto their long edge.
+  const float kStoneScale = 3.1;
+  const vec3 kStoneAspect = vec3(1.0, 1.7, 1.0);
+  const float kJointWidth = 0.045;
+  // How deep a joint is cut, in world units — the cube is 1.1 across, so this
+  // is about half a percent of it. A hairline, which is the whole point of this
+  // wall. It works out at roughly 40 degrees of chamfer at the joint's edge.
+  const float kJointDepth = 0.006;
+
+  float stoneId;
+  vec4 mas = masonry(q * kStoneAspect * kStoneScale, stoneId);
+
+  // ⚠️ A JOINT NEVER NARROWER THAN A PIXEL. Below that it stops being a line
+  // and becomes a flicker — the same reasoning as the band limiting on the
+  // noise, applied to a feature that has an exact width rather than a spectrum.
+  float jw = max(kJointWidth, lod * kStoneScale * 1.4);
+
+  // Two profiles: a tight chamfer right at the joint, and a much wider, gentler
+  // dome across the block. Real Inca faces are not flat — they bulge — and the
+  // two together are what reads as a fitted stone rather than a tile.
+  float bevel = smoothstep(0.0, jw, mas.x);
+  float dome = smoothstep(0.0, jw * 9.0, mas.x);
+  float faceH = bevel * 0.55 + dome * 0.45;
+  float inJoint = 1.0 - bevel;
+
+  // The slope of that, analytically — see masonry() for why no extra samples
+  // are needed. smoothstep's derivative is 6t(1-t)/width, and the field grows
+  // along the negative of the plane normal the distance was measured against.
+  float b1 = clamp(mas.x / jw, 0.0, 1.0);
+  float b2 = clamp(mas.x / (jw * 9.0), 0.0, 1.0);
+  float dFace = 0.55 * (6.0 * b1 * (1.0 - b1) / jw) +
+                0.45 * (6.0 * b2 * (1.0 - b2) / (jw * 9.0));
+  vec3 stoneSlope = (-mas.yzw) * dFace * kStoneAspect * kStoneScale * kJointDepth;
+
   float h = mossHeight(q, lod);
 
   // The growth's SLOPE, from the field itself rather than from the screen.
@@ -1054,8 +1204,17 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // 45% covered; 0.405 puts it near the 25th, so an upward one is about 75%.
   // The 0.06 window is roughly 0.8 of a deviation — patches with a defined
   // edge, rather than the soft wash a wider one gives.
+  //
+  // ⚠️ AND THE JOINTS ARE WHERE THE WATER IS. A joint is a recess, so it holds
+  // what runs off the block faces — which is why moss traces the masonry in
+  // every photograph of a wall like this. This one term is what makes the
+  // stonework legible without any of it being drawn: the pattern appears
+  // because something grew in it.
+  //
+  // The face thresholds are raised at the same time. If the blocks were as
+  // covered as the joints there would be no wall to see, only moss.
   float upward = clamp(n.y, 0.0, 1.0);
-  float t = mix(0.463, 0.405, upward);
+  float t = mix(0.500, 0.440, upward) - inJoint * 0.10;
   float moss = smoothstep(t, t + 0.06, h);
 
   // ── The stone ────────────────────────────────────────────────────────────
@@ -1071,6 +1230,13 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   float ridge = smoothstep(0.55, 1.0, creased);
   vec3 stone = mix(vec3(0.098, 0.093, 0.086), vec3(0.156, 0.150, 0.137), grain);
   stone *= mix(0.86, 1.08, ridge);
+  // ⚠️ EVERY BLOCK ITS OWN STONE. They were quarried separately and have
+  // weathered separately for five hundred years, so no two are the same tone.
+  // Without this the wall reads as one surface with lines scored into it —
+  // which is exactly what a tiled texture looks like, and the tell we are
+  // trying to avoid. Hashed from which cell this is, so a block is one colour
+  // all the way to its own edges.
+  stone *= mix(0.84, 1.16, stoneId);
 
   // ── The moss ─────────────────────────────────────────────────────────────
   // ⚠️ MOSS IS NOT ONE GREEN, and this is the biggest single gain over a flat
@@ -1108,6 +1274,8 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // Spanning the field's real range: smoothstep(0.0, 0.55, h) would sit almost
   // entirely past its own top end and hold nearly still.
   s.occlusion = mix(1.0, mix(0.62, 1.0, smoothstep(0.40, 0.56, h)), moss);
+  // A joint sees almost nothing of the sky — it is a slot between two stones.
+  s.occlusion *= mix(1.0, 0.60, inJoint);
   // Only the thin, newest growth at the tips passes light.
   s.through = moss * smoothstep(0.15, 0.85, tip);
 
@@ -1119,15 +1287,19 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // surface with real colour in it does not need the help.
   s.f0 = vec3(0.04);
 
-  vec3 alongFace = grad - n * dot(grad, n);
-  // ⚠️ MEASURED, LIKE THE THRESHOLDS. `grad / e` is the field's SLOPE, which
-  // averages 2.17 here, so this multiplier is roughly the tangent of how far
-  // the surface leans: 0.15 is about 18 degrees on average and 27 at its
-  // steepest, which is relief you can see without the surface tearing itself
-  // apart. The first attempt used 26, which works out at 89 degrees — the
-  // normal lying flat — and turned every clump into a black hole. Stone keeps a
-  // tenth of it, because worn rock is not smooth either.
-  s.normal = normalize(n - alongFace * (mix(0.035, 0.150, moss) / e));
+  // ⚠️ ONE SLOPE, TWO CAUSES: the stones' own shape and the growth on them.
+  // Adding them before tilting the normal — rather than tilting twice — is what
+  // keeps moss sitting IN a joint rather than floating across it.
+  //
+  // The moss figure is measured, like the thresholds: `grad / e` is the field's
+  // slope, which averages 2.17, so the multiplier is roughly the tangent of how
+  // far the surface leans — 0.15 is about 18 degrees on average and 27 at its
+  // steepest. The first attempt used 26, which works out at 89 degrees, the
+  // normal lying flat, and turned every clump into a black hole. Stone keeps a
+  // fraction of it, because worn rock is not smooth either.
+  vec3 slope = stoneSlope + (grad / e) * mix(0.035, 0.150, moss);
+  vec3 alongFace = slope - n * dot(slope, n);
+  s.normal = normalize(n - alongFace);
   return s;
 }
 
