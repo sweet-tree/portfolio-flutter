@@ -40,6 +40,18 @@ uniform float uSky;        // 0 = flat ground colour, 1 = the field
 uniform float uStars;      // 0 = off, 1 = space beyond the table
 uniform float uClouds;     // 0 = off, 1 = the flying volumetric energy
 
+// ⚠️ APPENDED AT THE END ON PURPOSE. Uniform indices follow declaration order,
+// so inserting one above would silently shift every index after it and every
+// value would land in the wrong slot.
+//
+// 0 = the plain near-black cube this project ran on until the material existed;
+// 1 = mossed stone. `?mat=0` to compare them on the real scene.
+//
+// This is not a tuning dial — it is an A/B for a decision about what the object
+// IS. A black cube reads as a modern abstract mark; a mossed one reads as an
+// artifact. Both are defensible and the choice is not a shader's to make.
+uniform float uMaterial;
+
 out vec4 fragColor;
 
 // ── World ───────────────────────────────────────────────────────────────────
@@ -969,9 +981,33 @@ struct CubeSurface {
   vec3 normal;        // tilted by the growth's own slope
   float occlusion;    // light cannot reach the bottom of a clump
   float through;      // how much light passes THROUGH rather than off
+  vec3 f0;            // reflectance head-on
 };
 
 CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
+  // ⚠️ THE PLAIN CUBE, for comparison — `?mat=0`. See uMaterial.
+  //
+  // These are the exact three values the object carried before it had a
+  // material: a near-black solid whose faces read only because each one
+  // reflects a different part of the environment, with the reflectance pushed
+  // well above the physical 0.04 for non-metals precisely to give those faces
+  // something to be told apart by.
+  //
+  // ⚠️ IT IS NOT PIXEL-FOR-PIXEL THE OLD BUILD. The indirect lighting around it
+  // is the energy-conserving version now, and the scene it sits in is brighter.
+  // This is the old MATERIAL in the current renderer, which is the honest
+  // comparison to make — not a time machine.
+  if (uMaterial < 0.5) {
+    CubeSurface plain;
+    plain.albedo = vec3(0.016, 0.016, 0.021);
+    plain.roughness = max(0.20, kMinRoughness);
+    plain.normal = n;
+    plain.occlusion = 1.0;
+    plain.through = 0.0;
+    plain.f0 = vec3(0.10, 0.10, 0.115);
+    return plain;
+  }
+
   // ⚠️ SAMPLED IN THE CUBE'S OWN FRAME, so the growth belongs to the object
   // rather than to the space it sits in. Without the rotation it would swim
   // across the faces the moment the cube turns. Spin is fixed at 0 today, which
@@ -1078,6 +1114,11 @@ CubeSurface cubeSurface(vec3 p, vec3 n, float spin, float lod) {
   // Only the part of the slope lying ALONG the face may tilt the normal. The
   // component pointing straight out is the growth getting thicker, not the
   // surface leaning, and letting it through would swell the face outward.
+  // 0.04 is the physical reflectance of every non-metal. The 0.10 the plain
+  // cube uses was invented to give a near-black solid some shape to read by; a
+  // surface with real colour in it does not need the help.
+  s.f0 = vec3(0.04);
+
   vec3 alongFace = grad - n * dot(grad, n);
   // ⚠️ MEASURED, LIKE THE THRESHOLDS. `grad / e` is the field's SLOPE, which
   // averages 2.17 here, so this multiplier is roughly the tangent of how far
@@ -1102,10 +1143,7 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod) 
   vec3 albedo = s.albedo;
   float roughness = s.roughness;
 
-  // 0.04 is the physical reflectance of every non-metal. The old 0.10 was
-  // invented to give a near-black cube some shape to read by; a surface with
-  // real colour in it does not need the help.
-  const vec3 f0 = vec3(0.04);
+  vec3 f0 = s.f0;
 
   vec3 l = normalize(kLightPos - p);
   vec3 h = normalize(l + v);

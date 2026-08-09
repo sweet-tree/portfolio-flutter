@@ -12,6 +12,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:portfolio/src/design/tokens.dart';
+import 'package:portfolio/src/query_params.dart';
 import 'package:portfolio/src/world/shaders.dart';
 import 'package:portfolio/src/world/world_camera.dart';
 
@@ -25,6 +26,15 @@ const double kCubeY = 0.34;
 
 /// Cube size as a fraction of the viewport's shortest side.
 const double kCubeSize = 0.26;
+
+/// The cube's material: 0 the plain near-black solid, 1 mossed stone.
+///
+/// ⚠️ NOT A TUNING DIAL. It is an A/B for a decision about what the object IS —
+/// a modern abstract mark, or an artifact — and that is a decision about the
+/// site's story rather than about a number. `?mat=0` puts the plain cube in the
+/// current renderer so the two can be compared on one screen in one moment,
+/// which is the only comparison worth making.
+double get kMaterial => qDouble('mat', 1);
 
 /// What fraction of full resolution the scene shader renders at.
 ///
@@ -151,7 +161,9 @@ class _ScenePainter extends CustomPainter {
       // frame (75 FPS without it against 30 with). The surface energy is
       // unaffected: the waterfall over the glass edge lives in the surface
       // shading, not in the volumetric.
-      ..setFloat(12, 0);
+      ..setFloat(12, 0)
+      // uMaterial — the cube's surface. `?mat=0` for the plain near-black cube.
+      ..setFloat(13, kMaterial);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
