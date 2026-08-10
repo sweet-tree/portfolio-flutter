@@ -181,7 +181,34 @@ final double kAbsorb = qDouble('absorb', 1).clamp(0.0, 4.0);
 /// splits into three separate coloured dots rather than a short smear, because
 /// nothing in between fills the gap. A field of bright points on black is
 /// exactly where the shortcut shows, and it turned the cube to confetti.
-final double kDisp = qDouble('disp', 1).clamp(0.0, 4.0);
+/// ⚠️ ZERO BY DEFAULT, because the cube no longer bends light at all — see
+/// [kCubeIor] — and dispersion is a difference between bendings.
+final double kDisp = qDouble('disp', 0).clamp(0.0, 4.0);
+
+/// How strongly the CUBE bends light. 1 is not at all. `?ior=`.
+///
+/// ⚠️ THIS CUBE DELIBERATELY DOES NOT REFRACT, and it is his call and the right
+/// one. Refraction displaces the view behind each face by a different amount,
+/// because each face meets the eye at a different angle — so the horizon STEPS
+/// at every edge of the object. A real glass block does exactly that. On a
+/// LOGO it reads as a mistake.
+///
+/// In his words: a hiring manager sees this for ten seconds, notices instantly
+/// whether it is clean, and never once wonders whether the optics are right.
+/// The mark's job is to be pixel perfect, not physically true.
+///
+/// ⚠️ AND REFLECTANCE IS NOT TIED TO IT. In physics they are one number; here
+/// they are two jobs. How a surface REFLECTS is what makes it read as glass;
+/// how it BENDS is what breaks the view behind it. The cube keeps real glass's
+/// Fresnel and refracts not at all — not a material that exists, and correct.
+///
+/// ⚠️ THE KNOB STAYS BECAUSE IT IS WORTH REAL MONEY ELSEWHERE. At 1.5 this is a
+/// true dielectric and everything behind it is built and correct: the chord
+/// through the body, absorption over the real distance, dispersion as a
+/// per-channel displacement, the view carried and shifted. That is a finished
+/// piece of work waiting for a project whose subject IS a piece of glass rather
+/// than a mark made of one.
+final double kCubeIor = qDouble('ior', 1).clamp(1.0, 2.4);
 
 /// The cube's tuning knobs, live on the deployed build.
 ///
@@ -499,7 +526,7 @@ class _CubeCache {
   static final String _knobs = [
     kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
     kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kCarvingModel,
-    kLetters, kAbsorb, kGlass, kOff,
+    kLetters, kAbsorb, kDisp, kCubeIor, kGlass, kOff,
     // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
     // before the first frame so this should always be true — but "should
     // always" is the kind of assumption a cache key exists to not rely on. If
@@ -749,7 +776,8 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(31, kLetters)
         ..setFloat(32, kAbsorb)
         ..setFloat(33, kDisp)
-        ..setFloat(34, kCarvingModel);
+        ..setFloat(34, kCarvingModel)
+        ..setFloat(35, kCubeIor);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass

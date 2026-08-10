@@ -175,6 +175,26 @@ uniform float uDisp;
 /// comparison that has ever settled anything here.
 uniform float uCarving;
 
+/// How strongly the CUBE bends light. 1 is none at all. `?ior=`.
+///
+/// ⚠️ SEPARATE FROM THE SHEET'S, WHICH STAYS AT REAL GLASS. The sheet is scenery
+/// and should behave like a material; the cube is the mark, and a mark has a
+/// different job.
+///
+/// ⚠️ AND IT IS SET TO 1 HERE, WHICH MEANS THIS CUBE DELIBERATELY DOES NOT
+/// REFRACT. His reasoning, and it is the right one: a hiring manager sees this
+/// object for ten seconds, notices instantly whether it is clean, and never once
+/// wonders whether the optics are correct. Refraction at each face displaces the
+/// view behind it by a different amount, so the horizon STEPS at every edge — a
+/// real glass block does exactly that, and on a logo it reads as a mistake
+/// rather than as physics.
+///
+/// The knob stays because it is genuinely useful elsewhere: at 1.5 this is real
+/// glass and the whole apparatus behind it — chord, absorption, dispersion, the
+/// displaced view — is correct and ready. Worth keeping for a project whose
+/// subject IS a piece of glass rather than a mark made of one.
+uniform float uIor;
+
 uniform sampler2D uCubeLayer;
 
 /// The cast shadow and the contact darkening, baked over the table's surface.
@@ -949,7 +969,10 @@ const float kInnerGain = 0.30;
 /// So this is the base, and `?absorb=` scales it, because the right value is a
 /// judgement about how the object should read rather than a number anyone can
 /// derive.
-vec3 glassAbsorb() { return vec3(0.42, 0.27, 0.16) * uAbsorb; }
+/// Halved again once he had found the level on the knob — `?absorb=0.5` was
+/// where he settled, so that value is the default and the knob reads 1 there.
+/// A default nobody uses is a default that is wrong.
+vec3 glassAbsorb() { return vec3(0.21, 0.135, 0.08) * uAbsorb; }
 #define kGlassAbsorb glassAbsorb()
 
 /// How much further blue bends than red on its way through the solid.
@@ -979,16 +1002,6 @@ vec3 glassAbsorb() { return vec3(0.42, 0.27, 0.16) * uAbsorb; }
 float dispersion() { return 0.017 * uDisp; }
 #define kDispersion dispersion()
 
-/// How many times light may turn back inside the solid before we stop following
-/// it.
-///
-/// ⚠️ FOUR IS NOT A BUDGET, IT IS WHERE THE ANSWER STOPS CHANGING. Each bounce
-/// carries less: absorbed over the leg it just travelled, and cut again by
-/// whatever escaped at the far end. By the fourth the beam is worth about a
-/// percent of what entered, which is below what eight bits can show. The loop
-/// also gives up early when what is left falls under that, so most rays cost far
-/// fewer than four.
-const int kGlassBounces = 4;
 
 /// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
 ///
@@ -2938,6 +2951,14 @@ vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
   // glancing one. This is what makes the cube read as MADE of something —
   // head-on you see into it, edge-on it turns to a mirror, and the transition
   // happens across every face at once.
+  //
+  // ⚠️ REFLECTANCE FROM REAL GLASS, BENDING FROM `uIor`, AND THE SPLIT IS
+  // DELIBERATE. They are one number in physics and two different jobs here. How
+  // a surface REFLECTS is what makes it look like glass; how it BENDS is what
+  // displaces the view behind it and steps the horizon at every edge. The mark
+  // wants the first and not the second, so at `?ior=1` this cube reflects
+  // exactly like glass and refracts not at all — which is not a material that
+  // exists, and is the correct answer for a logo.
   float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
   float fres = f0 + (1.0 - f0) * pow(1.0 - nDotV, 5.0);
 
@@ -2973,7 +2994,7 @@ vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
   // Bent on the way in, and the distance it then has to cross. Light entering a
   // corner travels almost nothing; light entering the middle of a face crosses
   // the whole body.
-  vec3 r1 = refract(rd, n, 1.0 / kIor);
+  vec3 r1 = refract(rd, n, 1.0 / uIor);
   vec3 nExit;
   vec2 tin = cubeIntersect(p + r1 * 1e-4, r1, 0.0, nExit);
   float chord = max(tin.y, 0.0);
@@ -3200,46 +3221,39 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
 /// contributes what it found, weighted by how much of the beam was still
 /// travelling by then. Taking only the final escape would throw away the
 /// brightest term.
-vec3 glassPath(vec3 pIn, vec3 dir, float spin, vec2 fragCoord, vec2 uvScreen,
-               float aspect, float rotation) {
-  if (dot(dir, dir) < 1e-6) return vec3(0.0);
+vec3 glassPath(vec3 pIn, vec3 rd, vec3 nIn, float ior, float spin,
+               vec2 fragCoord, vec2 uvScreen, float aspect, float rotation) {
+  // ⚠️ IT LEAVES ON ITS ORIGINAL HEADING, AND THAT IS THE WHOLE MODEL.
+  //
+  // Entering a body with parallel faces bends the light one way and leaving
+  // bends it back by the same amount, so the two cancel and what survives is a
+  // DISPLACEMENT — the scene behind arrives shifted rather than turned. That is
+  // what a pane of glass does to the view through it, it is what the sheet in
+  // this scene already does, and it is the reason the sheet is the calmest and
+  // best-looking thing here.
+  //
+  // ⚠️ AND IT DELIBERATELY DOES NOT SIMULATE A SOLID. The honest version — bounce
+  // the light until it finds the one face it is allowed out of — was built, and
+  // it was CORRECT and unusable. In a cube every face but the opposite one turns
+  // light back, so each face ends up carved into regions of folded views with
+  // hard straight boundaries between them. Real glass paperweights look exactly
+  // like that. This is not a paperweight; it is the mark for a website, and the
+  // physics was making it worse while costing four scene traces per wavelength.
+  //
+  // The thickness is not thrown away with the bounces: the ray still crosses the
+  // real chord, so it still displaces by the real amount and is still absorbed
+  // over the real distance. What is dropped is only the folding.
+  vec3 r1 = refract(rd, nIn, 1.0 / ior);
+  if (dot(r1, r1) < 1e-6) r1 = rd;
 
-  vec3 sum = vec3(0.0);
-  vec3 carried = vec3(1.0);
-  vec3 p = pIn;
-  vec3 d = dir;
-  float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
+  vec3 nx;
+  vec2 t = cubeIntersect(pIn + r1 * 1e-4, r1, 0.0, nx);
+  float seg = max(t.y, 0.0);
+  vec3 pOut = pIn + r1 * seg;
 
-  for (int b = 0; b < kGlassBounces; b++) {
-    vec3 nx;
-    vec2 t = cubeIntersect(p + d * 1e-4, d, 0.0, nx);
-    float seg = max(t.y, 0.0);
-    vec3 pOut = p + d * seg;
-    vec3 nOut = boxNormalAt(spinInto() * (pOut - cubeOrigin()));
-
-    // Swallowed over the distance actually travelled on THIS leg. A ray that
-    // rattles around inside comes out deeper in colour than one that crosses
-    // straight through, which is true and is half of why thick glass looks
-    // thick.
-    carried *= exp(-kGlassAbsorb * seg);
-
-    vec3 out2 = refract(d, -nOut, kIor);
-    if (dot(out2, out2) > 1e-6) {
-      // It can get out. Most of it does; the rest stays in and keeps going.
-      float ct = abs(dot(out2, nOut));
-      float fr = f0 + (1.0 - f0) * pow(1.0 - ct, 5.0);
-      sum += carried * (1.0 - fr) *
-             traceBackdrop(pOut + out2 * 1e-3, out2, spin, fragCoord, uvScreen,
-                           aspect, rotation);
-      carried *= fr;
-    }
-    // Whatever is left turns back into the solid — all of it under total
-    // internal reflection, a few percent otherwise.
-    if (max(carried.r, max(carried.g, carried.b)) < 0.01) break;
-    d = reflect(d, nOut);
-    p = pOut;
-  }
-  return sum;
+  return exp(-kGlassAbsorb * seg) *
+         traceBackdrop(pOut + rd * 1e-3, rd, spin, fragCoord, uvScreen, aspect,
+                       rotation);
 }
 
 /// Everything EXCEPT the cube's own primary visibility: the background, and
@@ -3866,11 +3880,12 @@ void main() {
       // ANGLE; frosting is a property of the SURFACE; one cannot be recovered
       // from the other once they have been multiplied together.
       float nDotV = max(dot(nCube, -rd), 1e-4);
+      // Reflectance from real glass; bending from `uIor`. See shadeGlassCube.
       float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
       float fres = f0 + (1.0 - f0) * pow(1.0 - nDotV, 5.0);
 
       vec3 pIn = kEye + rd * tCube.x;
-      vec3 r1 = refract(rd, nCube, 1.0 / kIor);
+      vec3 r1 = refract(rd, nCube, 1.0 / uIor);
 
       // ⚠️ THE FOG IS INTEGRATED ALONG THE CHORD, not sampled at the surface,
       // and that is the difference between a solid full of something and a
@@ -3918,39 +3933,37 @@ void main() {
         inner = kEnergyTint * (ambient + plate * lit * kLetterGain) * uEmit;
       }
 
-      // ⚠️ AND WHAT IS SEEN THROUGH IT IS TRACED, NOT FAKED. Light leaves the
-      // far side bent a second time, so the sheet and the stars behind arrive
-      // displaced — the single most convincing thing a thick transparent solid
-      // does, and the one thing a surface trick can never imitate.
+      // ⚠️ WHAT IS SEEN THROUGH IT IS DISPLACED, NOT FOLDED. The scene behind
+      // arrives shifted by how far the light was carried sideways crossing the
+      // body — real thickness, honestly measured — but leaving on its original
+      // heading, so it stays one continuous view rather than being broken into
+      // regions. That is the sheet's model, and it is the reason the sheet is
+      // the calmest thing in this scene.
       //
-      // ⚠️ AND WITH DISPERSION, WHICH IS WHERE GLASS STOPS LOOKING LIKE PERSPEX.
-      // Denser media bend blue further than red, so what comes through a thick
-      // solid arrives split — a thin fringe of colour along every high-contrast
-      // edge seen through it. It is the single most recognisable signature of
-      // real glass and it cannot be faked with a tint, because it depends on the
-      // ANGLE: dead centre there is none, and it widens toward the edges exactly
-      // where a viewer is already looking for it.
-      //
-      // ⚠️ THREE TRACES ONLY WHERE THERE IS SOMETHING TO SEE. Head-on the three
-      // channels leave within a whisker of each other, so one trace answers all
-      // three and the extra two would be spent proving they agree. That test is
-      // coherent across the screen — the strongly-refracting band hugs the
-      // silhouette — so the branch actually pays here, unlike the scattered ones
-      // this project has tried before.
+      // ⚠️ AND DISPERSION IS ONLY A DIFFERENT DISPLACEMENT PER CHANNEL now, which
+      // is both cheaper and better behaved: three slightly different shifts of
+      // the same continuous view, rather than three chances to fall on opposite
+      // sides of a hard boundary. Traced three times only where the channels have
+      // actually separated — a test about whether the answers DIFFER, which is
+      // the only honest reason to skip work.
       vec3 through = vec3(0.0);
       if (!isOff(8.0)) {
-        vec3 rR = refract(rd, nCube, 1.0 / (kIor - kDispersion));
-        vec3 rB = refract(rd, nCube, 1.0 / (kIor + kDispersion));
-        float spread = 1.0 - min(dot(rR, rB), 1.0);
-        if (spread > 3e-5) {
+        float iR = uIor - kDispersion;
+        float iB = uIor + kDispersion;
+        vec3 rR = refract(rd, nCube, 1.0 / iR);
+        vec3 rB = refract(rd, nCube, 1.0 / iB);
+        if (1.0 - min(dot(rR, rB), 1.0) > 3e-5) {
           through = vec3(
-            glassPath(pIn, rR, spin, fragCoord, uvScreen, aspect, rotation).r,
-            glassPath(pIn, r1, spin, fragCoord, uvScreen, aspect, rotation).g,
-            glassPath(pIn, rB, spin, fragCoord, uvScreen, aspect, rotation).b
+            glassPath(pIn, rd, nCube, iR, spin, fragCoord, uvScreen, aspect,
+                      rotation).r,
+            glassPath(pIn, rd, nCube, uIor, spin, fragCoord, uvScreen, aspect,
+                      rotation).g,
+            glassPath(pIn, rd, nCube, iB, spin, fragCoord, uvScreen, aspect,
+                      rotation).b
           );
         } else {
-          through = glassPath(pIn, r1, spin, fragCoord, uvScreen, aspect,
-                              rotation);
+          through = glassPath(pIn, rd, nCube, uIor, spin, fragCoord, uvScreen,
+                              aspect, rotation);
         }
       }
 
