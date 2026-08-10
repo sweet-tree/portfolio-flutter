@@ -111,6 +111,26 @@ final double kColourScale = qDouble('cs', 0.4).clamp(0.1, 3.0);
 /// `?bscale=` to test the cost of fixing it on a real device.
 final double kBloomScale = qDouble('bscale', 0.22).clamp(0.05, 2.0);
 
+/// `?glow=0` — draws no colour on the statement, leaving it as plain ink.
+///
+/// ⚠️ A PROFILING SWITCH IN THE FAMILY OF `?off=`, and it earned its keep the
+/// day it was added. The page costs 13.3 ms of GPU a frame and the whole 3D
+/// scene is only 6.0 of it — so half the frame is "everything else", which is
+/// the statement's colour AND the panels AND the rail AND the navigation.
+/// Deducing which by switching off the parts I could already reach had been
+/// wrong three times running. With this, one number settled it: `?glow=0` and
+/// `?bare=1` measure the SAME, so the panels, the rail, the nav and the hero's
+/// own text cost nothing measurable, and the statement's colour is 6.1 ms.
+///
+/// ⚠️ AND WHAT IT LED TO: the rectangle that colour is drawn into measures
+/// 2581 x 1491 device pixels — FOUR FIFTHS OF THE SCREEN — while its ink covers
+/// of it. Cost is proportional to that rectangle (measured: halving it saved
+/// 3.3 ms), so roughly 70% of the statement's cost is spent on empty space.
+///
+/// It is not a fallback and not a style — with it off the sentence is flat ink
+/// and the whole idea of the page is missing.
+final bool kGlowOn = qDouble('glow', 1) > 0.5;
+
 /// The statement, rasterised once. Alpha is the glyph coverage — the real one,
 /// the only one — and there is no second rasterisation anywhere.
 @immutable
@@ -463,7 +483,7 @@ class _GlowPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final area = glyphs.block;
-    if (area.isEmpty) return;
+    if (area.isEmpty || !kGlowOn) return;
 
     // ⚠️ SIZED IN LOGICAL PIXELS, NOT DEVICE PIXELS. See kColourScale — this
     // buffer holds a smooth gradient, and the sharpness of the result comes
