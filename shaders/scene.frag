@@ -81,11 +81,17 @@ uniform vec2 uSpinCS;    // (cos, sin) of the pose — see spinInto()
 // three times running. Turning one term off and reading the frame rate is the
 // only honest way to find out, and it takes one build instead of one per guess.
 //
-//   1 cast shadow   2 contact darkening   4 the energy
-//   8 what the glass transmits           16 the reflection and its ghost
-//  32 the star field                     64 the cube's antialiasing
+//   1 cast shadow          2 contact darkening    4 the energy on the sheet
+//   8 glass transmission  16 reflection + ghost  32 the star field
+//  64 the cube's antialiasing
 //
-// Add them: ?off=3 drops both the shadow and the darkening.
+// And the carving, so each half of it can be judged on its own:
+// 128 the fog inside the glass    256 the burning cut edges
+// 512 the glass MATERIAL — leaves the channel an unlit hole in the stone
+//1024 the pool the carving casts on the sheet
+//
+// Add them: ?off=3 drops both the shadow and the darkening; ?off=384 leaves the
+// channel cut and glassy with nothing in it.
 uniform float uOff;
 
 // ⚠️ WHICH LAYER THIS PASS IS DRAWING.
@@ -2259,7 +2265,11 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
   // the energy must never do. Filling the channel with glass deletes the
   // question: the letters cannot be green because there is nothing green in
   // them. Stone lips above the pour keep their growth, which is where it belongs.
-  moss *= 1.0 - glass.amount;
+  // ⚠️ TIED TO THE GLASS SWITCH, not applied unconditionally. With `?off=512`
+  // there is no glass in the channel, so there is nothing to stop growth
+  // reaching into it — and the point of that switch is to see the cut as bare
+  // stone, which is what it looked like before the glass existed.
+  moss *= isOff(512.0) ? 1.0 : (1.0 - glass.amount);
   // How close bare rock is to being overtaken. A clump standing proud throws a
   // little shade onto the stone beside it, and that contact darkening is most
   // of what makes growth sit ON a surface rather than in it.
@@ -2333,7 +2343,8 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
   // Crustose lichen wants dry, exposed, open rock — which a cut is the opposite
   // of. Suppressed in the carving for the same reason it is suppressed in the
   // joints, by the same kind of term.
-  crust *= (1.0 - moss) * bevel * uLichen * (1.0 - glass.amount);
+  crust *= (1.0 - moss) * bevel * uLichen *
+           (isOff(512.0) ? 1.0 : (1.0 - glass.amount));
 
   // Pale sage, and paler still at the growing edge, which is the newest and
   // thinnest part of the crust. Some colonies run yellow — a different species
@@ -2477,12 +2488,14 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
   // What is NOT here is the fog. That is the one part of this object that moves,
   // so it cannot live in a cached picture — it is applied live in the scene pass
   // from the path length below. See CarveGlass.
-  s.albedo = mix(s.albedo, vec3(0.004), glass.amount);
-  s.roughness = mix(s.roughness, max(0.055, kMinRoughness), glass.amount);
-  s.f0 = mix(s.f0, vec3(0.04), glass.amount);
-  s.fuzz *= 1.0 - glass.amount;
-  s.through *= 1.0 - glass.amount;
-  s.normal = normalize(mix(s.normal, n, glass.amount));
+  if (!isOff(512.0)) {
+    s.albedo = mix(s.albedo, vec3(0.004), glass.amount);
+    s.roughness = mix(s.roughness, max(0.055, kMinRoughness), glass.amount);
+    s.f0 = mix(s.f0, vec3(0.04), glass.amount);
+    s.fuzz *= 1.0 - glass.amount;
+    s.through *= 1.0 - glass.amount;
+    s.normal = normalize(mix(s.normal, n, glass.amount));
+  }
   s.glass = glass;
   return s;
 }
@@ -2962,7 +2975,9 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     // Scaled by uEmit so the whole chain moves together on one knob: turn the
     // carving off and its reflection in the world goes with it, which is what
     // makes `?emit=0` an honest A/B rather than a half-disabled state.
-    vec3 spill = kEnergyTint * lit.b * carvingOutput() * uEmit * 1.35;
+    vec3 spill = isOff(1024.0)
+        ? vec3(0.0)
+        : kEnergyTint * lit.b * carvingOutput() * uEmit * 1.35;
 
     // ── THE GLASS MATERIAL — the real one, and now the DEFAULT ──────────────
     //
@@ -3419,8 +3434,9 @@ void main() {
       // stone — the same reason the sheet's far edge is the brightest thing on
       // it. The rim reaches slightly onto the stone, which is what stops the
       // light ending in a hard line.
-      emitted = kEnergyTint * dens * uEmit *
-                (path * kFogGain * emitSum.g + emitSum.b * kEdgeGain);
+      float fog = isOff(128.0) ? 0.0 : path * kFogGain * emitSum.g;
+      float rim = isOff(256.0) ? 0.0 : emitSum.b * kEdgeGain;
+      emitted = kEnergyTint * dens * uEmit * (fog + rim);
     }
     col = mix(col, sum + emitted, cov);
   }

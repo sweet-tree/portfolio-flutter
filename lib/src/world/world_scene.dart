@@ -216,7 +216,20 @@ final double kBlocks = qDouble('blocks', 3.4).clamp(3.0, 9.0);
 /// nothing at all. Profile at 1.3, decide at 1.0. `?scale=`.
 final double kSceneScale = qDouble('scale', 1).clamp(0.3, 2.0);
 
-/// TEMPORARY profiling switches — `?off=`, a sum. Remove with the shader's.
+/// Feature switches — `?off=`, a SUM of the ones to drop.
+///
+/// ⚠️ IT STARTED AS A PROFILING TOOL AND IS NOW HOW THIS SCENE IS JUDGED. Every
+/// part of it is layered on every other part, so "is this better" is usually
+/// unanswerable until the thing under discussion is the only thing changing. He
+/// asked for exactly that: the same build, with pieces turned off.
+///
+///     1 cast shadow          2 contact darkening    4 energy on the sheet
+///     8 glass transmission  16 reflection + ghost  32 the star field
+///    64 the cube's antialiasing
+///   128 the fog inside the carving
+///   256 the burning cut edges of the carving
+///   512 the carving's glass MATERIAL — leaves it an unlit hole in the stone
+///  1024 the pool the carving casts on the sheet
 final double kOff = qDouble('off', 0);
 
 /// Pins the scene's clock to a fixed second. Negative means run normally.
