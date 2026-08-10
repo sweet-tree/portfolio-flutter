@@ -1984,6 +1984,10 @@ float glyphAt(vec2 g, float cell) {
 const float kLetterThick = 0.10;
 const float kLetterGain = 5.0;
 
+/// How brightly the composited symbols are filled by the field. Higher than the
+/// interior's gain because this is the mark itself rather than atmosphere in it.
+const float kLetterFill = 2.6;
+
 /// How much of the letters is at this point INSIDE the solid.
 ///
 /// ⚠️ THE LETTERS ARE NOT A FEATURE ON THE OBJECT — THEY ARE THE FOG, GATHERED.
@@ -2084,6 +2088,38 @@ float glyphDist(vec2 uv, vec3 nl) {
   // would leave the letters the right size with the wrong-sized walls to their
   // grooves, which is the kind of error that looks like a depth problem.
   return pixels / (kGlyphCell * 0.5) * max(uGlyph, 1e-3);
+}
+
+/// Where a NEIGHBOURING pixel lands on this same face, in the face's own
+/// coordinates — the raw material for measuring how fast anything on the face is
+/// changing across the screen.
+///
+/// ⚠️ THIS EXISTS BECAUSE `fwidth` IS NOT IN FLUTTER'S SHADER SUBSET. Screen-
+/// space derivatives are the standard way to antialias a distance field and the
+/// compiler rejects them outright — "no match for fwidth(float)". So the same
+/// quantity is measured by hand: fire the neighbouring pixel's ray, land it on
+/// the face, and difference. Two ray-box intersections, which on an analytic box
+/// is a handful of instructions.
+///
+/// Returns false when the neighbour misses the cube or lands on a DIFFERENT
+/// face. Differencing across a corner would measure the jump between two faces
+/// rather than the rate of change on one, and hand back a width some enormous
+/// multiple of a pixel — which would smear the letters into fog exactly along
+/// the edges where they need to be sharpest.
+bool faceUvAt(vec2 fc, vec3 fwd, vec3 right, vec3 up, float spin, vec3 nl0,
+              out vec2 uvOut) {
+  vec2 uvk = vec2(
+    (fc.x - uCubeCenter.x) / uCubeUnit,
+    -(fc.y - uCubeCenter.y) / uCubeUnit
+  );
+  vec3 rdk = normalize(fwd * kFocal + right * uvk.x + up * uvk.y);
+  vec3 nk;
+  vec2 tk = cubeIntersect(kEye, rdk, spin, nk);
+  if (tk.x <= 0.0) return false;
+  vec3 nlk = spinInto() * nk;
+  if (dot(nlk, nl0) < 0.99) return false;
+  uvOut = carveFaceUv(spinInto() * (kEye + rdk * tk.x - cubeOrigin()), nlk);
+  return true;
 }
 
 /// The carving's signed distance on this face — negative inside the cut.
@@ -3036,6 +3072,11 @@ vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
   // something existing inside it.
   float trans = 1.0 - fres;
   vec3 frost = vec3(0.0);
+  // ⚠️ THE FROST IS THE BASE UNDER BOTH 2 AND 3, and that is what makes the
+  // energy safe to switch off. Under 3 the field is added ON TOP of this rather
+  // than replacing it — so with the energy off the mark is still a mark, frosted
+  // and legible, and turning the energy on lights it rather than creating it. A
+  // logo that disappears when an effect is disabled is not a logo.
   if (uLetters > 1.5) {
     vec3 nl = spinInto() * n;
     float aa = max(lod / max(uCubeHalf, 1e-4), 1e-5);
@@ -3611,6 +3652,96 @@ void main() {
 
   // One pixel in world units AT THE CUBE'S DEPTH, not at the image plane.
   float px = (tc / kFocal) / uCubeUnit;
+
+  // ⚠️ THE SYMBOLS AS THEIR OWN LAYER, AT DEVICE RESOLUTION — `?letters=3`.
+  //
+  // The scene is rendered below the display's real resolution and scaled up,
+  // which is right for everything soft in it and wrong for the one thing that
+  // has to be pixel perfect. `?scale=2` proved the point and the price: true
+  // device resolution for the whole frame costs four times the pixels and ran at
+  // 19 fps. So the mark's symbols get what the STATEMENT already gets — their
+  // own pass at full resolution, composited on top of a scene that stays cheap.
+  //
+  // ⚠️ AND IT IS THE STATEMENT'S MECHANISM, NOT A NEW ONE. Rasterise the shape
+  // ONCE, let its coverage be the alpha, have a shader supply the colour per
+  // pixel from the energy field, composite once. The reason it is built that way
+  // is that two rasterisations of one layout share glyph positions but not
+  // antialiasing coverage, and nothing reconciles them afterwards — you get a
+  // white rim, or a dark rim, or a dark rim everywhere, with no setting in
+  // between.
+  //
+  // So the letters are not tinted to resemble the energy. They are FILLED with
+  // it: the same field, the same threshold, read through a glyph mask. Turn the
+  // energy up and the letters follow, because there is only one of it.
+  //
+  // ⚠️ THE TRADE, ACCEPTED KNOWINGLY: composited letters are ON the glass rather
+  // than IN it. Nothing reflects over them and the frost does not shade them.
+  // That is why this is a third path rather than a replacement — `?letters=2`
+  // keeps the etched-into-the-surface version, and both stay switchable.
+  //
+  // Placed here, before the 64-sample antialiasing, because this pass wants
+  // neither the material nor the supersampling — only the geometry above it.
+  if (uLayer > 8.5) {
+    // ⚠️ GATED ON THE CUBE'S OWN ENERGY SWITCH. This layer is filled from the
+    // field that `?off=128` disables, and it was ignoring it — so the energy
+    // could be switched off while the letters carried on being filled by it.
+    // A switch that half of the scene obeys is worse than no switch, because
+    // what survives it looks like a finding.
+    if (isOff(128.0)) { fragColor = vec4(0.0); return; }
+    if (tCube.x <= 0.0) { fragColor = vec4(0.0); return; }
+    vec3 nl = spinInto() * nCube;
+    // Nothing on the top or bottom: a symbol belongs on the faces you read.
+    if (abs(nl.y) > 0.5) { fragColor = vec4(0.0); return; }
+
+    vec3 hit = kEye + rd * tCube.x;
+    vec3 lp = spinInto() * (hit - cubeOrigin());
+    vec2 uvc = carveFaceUv(lp, nl);
+    float d = glyphDist(uvc, nl);
+
+    // ⚠️ THE RAMP'S WIDTH IS MEASURED, NOT PREDICTED, and that is what fixes the
+    // `D`. A single footprint is correct on a face you look straight at and
+    // wrong on one you look ALONG: the pose deliberately sets the two visible
+    // faces at different incidences, so the left one is squeezed horizontally
+    // and a pixel there covers far more of the letter across than down. One
+    // width for both directions is then too narrow on one axis and too wide on
+    // the other — and `D`'s upright stem, the most vertical stroke on the most
+    // oblique face, is the worst case in the whole mark.
+    //
+    // This asks how fast the distance is ACTUALLY changing from this pixel to
+    // its neighbours, which answers foreshortening, cube size and viewing angle
+    // together because it measures the thing itself instead of predicting it.
+    // The material solved this same problem long ago — a pixel on a tilted face
+    // is a smear, not a circle — and the glyph edge never got the same
+    // treatment.
+    float w = max(px / max(uCubeHalf, 1e-4), 1e-5);
+    vec2 uvX;
+    vec2 uvY;
+    if (faceUvAt(fragCoord + vec2(1.0, 0.0), fwd, right, up, spin, nl, uvX) &&
+        faceUvAt(fragCoord + vec2(0.0, 1.0), fwd, right, up, spin, nl, uvY)) {
+      w = max(abs(glyphDist(uvX, nl) - d) + abs(glyphDist(uvY, nl) - d), 1e-6);
+    }
+    float mask = clamp(0.5 - d / w, 0.0, 1.0);
+    if (mask <= 0.0) { fragColor = vec4(0.0); return; }
+
+    // Filled from the field, sampled a little way INSIDE the solid so the
+    // letters read as lit by what is in the cube rather than by a film on it.
+    float dens = smoothstep(kFogLow, kFogHigh,
+                            carveFogField(hit - rd * (uCubeHalf * 0.6)));
+    vec3 lit = kEnergyTint * dens * uEmit * kLetterFill;
+    // ⚠️ PREMULTIPLIED, AND ADDED RATHER THAN LAID OVER. Light travelling
+    // through a mark can only ever ADD; it must never leave the glass behind it
+    // darker than it was. Laid over opaquely — which is what this did — a letter
+    // came out HEAVIER than its surroundings wherever the field happened to be
+    // thin, because the fill was replacing bright glass with dim energy. The
+    // statement gets away with opaque only because it sits on a near-black
+    // panel; here the ground underneath is lit.
+    //
+    // Alpha still carries the coverage rather than being zeroed: a premultiplied
+    // colour with no alpha is not a valid colour, and this project has already
+    // been bitten by treating that channel as spare.
+    fragColor = vec4(ACESToneMap(lit, kExposure) * mask, mask);
+    return;
+  }
 
   float edgeDist = 1e9;
   if (tCube.x > 0.0) {

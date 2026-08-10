@@ -146,7 +146,14 @@ final double kCarvingModel = qDouble('carving', 1).clamp(0.0, 1.0);
 ///
 ///   0  nowhere — the solid on its own
 ///   1  suspended INSIDE it, as a denser region of the same fog
-///   2  frosted flat onto its faces
+///   2  frosted flat onto its faces, inside the scene's own resolution
+///   3  their own pass at DEVICE resolution, filled by the energy field
+///
+/// ⚠️ THE CLAMP IS PART OF THE KNOB. It was left at 0..2 when 3 was added, so
+/// `?letters=3` silently became 2 and two URLs rendered the identical picture —
+/// which is worse than a crash, because it looks like a finding. Every clamp
+/// here is a statement about what the knob means, and it has to be widened in
+/// the same edit that widens the meaning.
 ///
 /// ⚠️ 1 IS NOT A FEATURE ON THE OBJECT, IT IS THE FOG GATHERED INTO A SHAPE.
 /// Every earlier attempt made the letters a separate thing that then had to be
@@ -158,7 +165,7 @@ final double kCarvingModel = qDouble('carving', 1).clamp(0.0, 1.0);
 ///
 /// Both are built rather than described, because a paragraph about two things
 /// nobody can see is not something anyone can have an opinion about.
-final double kLetters = qDouble('letters', 1).clamp(0.0, 2.0);
+final double kLetters = qDouble('letters', 1).clamp(0.0, 3.0);
 
 /// How much the glass cube swallows over distance. `?absorb=`.
 ///
@@ -372,6 +379,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _emitShader;
   /// An eighth, for the cube's resolved entry normal — same reasoning again.
   ui.FragmentShader? _normalShader;
+  /// A ninth, for the symbols at device resolution — same reasoning again.
+  ui.FragmentShader? _lettersShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -392,6 +401,7 @@ class _WorldSceneState extends State<WorldScene>
     _coverShader = Shaders.scene?.fragmentShader();
     _emitShader = Shaders.scene?.fragmentShader();
     _normalShader = Shaders.scene?.fragmentShader();
+    _lettersShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -416,6 +426,7 @@ class _WorldSceneState extends State<WorldScene>
     _coverShader?.dispose();
     _emitShader?.dispose();
     _normalShader?.dispose();
+    _lettersShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     _bandCache.dispose();
@@ -432,9 +443,11 @@ class _WorldSceneState extends State<WorldScene>
     final coverShader = _coverShader;
     final emitShader = _emitShader;
     final normalShader = _normalShader;
+    final lettersShader = _lettersShader;
     if (shader == null ||
         emitShader == null ||
         normalShader == null ||
+        lettersShader == null ||
         coverShader == null ||
         energyShader == null ||
         layerShader == null ||
@@ -452,6 +465,8 @@ class _WorldSceneState extends State<WorldScene>
         coverShader: coverShader,
         emitShader: emitShader,
         normalShader: normalShader,
+        lettersShader: lettersShader,
+        devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
         lightCache: _lightCache,
         bandCache: _bandCache,
         time: _time,
@@ -683,6 +698,8 @@ class _ScenePainter extends CustomPainter {
     required this.coverShader,
     required this.emitShader,
     required this.normalShader,
+    required this.lettersShader,
+    required this.devicePixelRatio,
     required this.lightCache,
     required this.bandCache,
     required this.time,
@@ -700,6 +717,8 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader coverShader;
   final ui.FragmentShader emitShader;
   final ui.FragmentShader normalShader;
+  final ui.FragmentShader lettersShader;
+  final double devicePixelRatio;
   final double time;
   final double camera;
   final double velocity;
@@ -996,6 +1015,46 @@ class _ScenePainter extends CustomPainter {
       Paint()..filterQuality = FilterQuality.high,
     );
 
+    // ── The symbols, at the display's own resolution ────────────────────────
+    //
+    // ⚠️ THE SCENE IS RENDERED BELOW THE DISPLAY AND SCALED UP, which is right
+    // for everything soft in it and wrong for the one thing that has to be
+    // pixel perfect. `?scale=2` proved both halves of that: device resolution
+    // for the whole frame is four times the pixels and ran at 19 fps.
+    //
+    // So the mark's symbols get what the STATEMENT already gets — their own
+    // pass at full resolution, over a scene that stays cheap. Same mechanism,
+    // deliberately: coverage as alpha, colour supplied per pixel by the energy
+    // field, composited once.
+    //
+    // ⚠️ IT COSTS FAR LESS THAN ITS SIZE SUGGESTS. Every pixel that misses the
+    // cube is a ray-box test and an early return, and the cube is one
+    // contiguous region of the screen — so the gangs that do the work are the
+    // gangs over the object, and the rest fall out at once.
+    if (kLetters > 2.5) {
+      final letterSize = Size(
+        (size.width * devicePixelRatio).roundToDouble(),
+        (size.height * devicePixelRatio).roundToDouble(),
+      );
+      final letters = renderSmall(lettersShader, 9, letterSize);
+      canvas.drawImageRect(
+        letters,
+        Offset.zero & letterSize,
+        Offset.zero & size,
+        // ⚠️ ADDED, NOT LAID OVER. Light through a mark can only ever add; it
+        // must never make the glass behind it darker than it was. The frosted
+        // letters underneath are the mark itself and stay legible with the
+        // energy off — this pass lights them rather than creating them.
+        //
+        // Drawn one device pixel to one buffer pixel, so there is nothing to
+        // filter and nothing for a filter to soften.
+        Paint()
+          ..blendMode = BlendMode.plus
+          ..filterQuality = FilterQuality.none,
+      );
+      letters.dispose();
+    }
+
     image.dispose();
     picture.dispose();
     // ⚠️ bandImage IS NOT DISPOSED HERE — the cache owns it now and will free
@@ -1005,5 +1064,8 @@ class _ScenePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ScenePainter old) =>
-      old.time != time || old.camera != camera || old.velocity != velocity;
+      old.time != time ||
+      old.camera != camera ||
+      old.velocity != velocity ||
+      old.devicePixelRatio != devicePixelRatio;
 }
