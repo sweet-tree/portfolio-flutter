@@ -205,6 +205,28 @@ uniform float uIor;
 /// not a number anyone can derive — so it is his to make rather than mine.
 uniform float uEdge;
 
+/// How strongly the PLATFORM'S energy climbs into the cube. `?wall=`.
+///
+/// ⚠️ THE SAME FIELD, READ IN A SECOND PLACE — not a third effect that resembles
+/// the other two. Until now the sheet's flow, the cube's interior and the pool
+/// beneath were three separate fields sharing a colour, and nothing fed anything.
+/// Here the cube asks what the energy is doing on the platform DIRECTLY BENEATH
+/// it and carries that upward, so the continuity is structural rather than
+/// simulated: turn the sheet's flow up and the cube follows, because there is
+/// only one of it.
+///
+/// ⚠️ AND IT IS VERY NEARLY FREE, which is the surprise. The sheet's energy is
+/// already rendered once a frame into a texture at a sixteenth of the pixels, so
+/// this costs ONE PROJECTION AND ONE LOOKUP against roughly 480 hashed noise
+/// evaluations per pixel for the volumetric interior. About a hundredfold, not a
+/// twofold.
+///
+/// The physical story is also the one this scene started from: both are glass,
+/// they are in contact where the cube stands, and light trapped inside a sheet
+/// climbing into a solid resting on it is exactly how an edge-lit acrylic sign
+/// works.
+uniform float uWall;
+
 uniform sampler2D uCubeLayer;
 
 /// The cast shadow and the contact darkening, baked over the table's surface.
@@ -978,6 +1000,19 @@ const float kEdgeGain = 1.30;
 /// class of mistake as reusing a threshold between two fields with different
 /// statistics, which this project has now paid for three times.
 const float kInnerGain = 0.30;
+
+/// How far up the cube the platform's energy reaches, as a multiple of the
+/// cube's half-width.
+///
+/// ⚠️ THE FALLOFF IS THE WHOLE CHARACTER OF IT. Tight, and the energy is a band
+/// pooling at the contact — a story about the platform feeding the object.
+/// Loose, and the cube is lit through its whole body — a story about the two
+/// being one piece of glass. Both are defensible and they say different things,
+/// which is why `?wall=` exists rather than a number I picked.
+const float kWallRise = 0.85;
+
+/// Turns the sheet's own energy, read beneath the cube, into light in the cube.
+const float kWallGain = 0.85;
 
 /// How much the glass swallows per world unit travelled, per channel.
 ///
@@ -4167,6 +4202,40 @@ void main() {
         inner = kEnergyTint * (ambient + plate * lit * kLetterGain) * uEmit;
       }
 
+      // ── The platform's own energy, climbing into the solid ────────────────
+      //
+      // ⚠️ THE SAME FIELD, READ IN A SECOND PLACE. The cube asks what the energy
+      // is doing on the sheet DIRECTLY BENEATH this point and carries it upward.
+      // Not a third effect matched to the other two — one field, so the two
+      // cannot drift apart however either is tuned later.
+      //
+      // ⚠️ AND IT COSTS ONE PROJECTION AND ONE LOOKUP. The sheet's energy is
+      // already rendered once a frame at a sixteenth of the pixels, and that
+      // pass traces the TABLE without the cube in the way — so the texture
+      // already holds valid energy for the ground the cube is standing on,
+      // which is exactly the part you cannot see and exactly the part this
+      // needs. Against roughly 480 hashed noise evaluations per pixel for the
+      // volumetric interior, this is free.
+      vec3 wall = vec3(0.0);
+      if (uWall > 1e-4 && !isOff(2048.0)) {
+        // Sampled at the middle of the body, so it reads as light IN the glass
+        // rather than a film on the face nearest the camera.
+        vec3 mid = pIn + rd * (chord * 0.5);
+        // Straight down onto the sheet: the footprint this point stands over.
+        vec3 foot = vec3(mid.x, 0.0, mid.z);
+        vec3 rel = foot - kEye;
+        float z = dot(rel, fwd);
+        if (z > 1e-3) {
+          vec2 sp = vec2(dot(rel, right), dot(rel, up)) * kFocal / z;
+          vec2 su = (uCubeCenter + vec2(sp.x, -sp.y) * uCubeUnit) / uSize;
+          if (su.x > 0.0 && su.x < 1.0 && su.y > 0.0 && su.y < 1.0) {
+            float climb = exp(-max(mid.y, 0.0) / (uCubeHalf * kWallRise));
+            wall = decodeEnergy(texture(uEnergyMap, su).rgb) * climb *
+                   uWall * kWallGain;
+          }
+        }
+      }
+
       // ⚠️ WHAT IS SEEN THROUGH IT IS DISPLACED, NOT FOLDED. The scene behind
       // arrives shifted by how far the light was carried sideways crossing the
       // body — real thickness, honestly measured — but leaving on its original
@@ -4248,6 +4317,7 @@ void main() {
       emitted = through * trans +
                 reflected * fres +
                 inner +
+                wall +
                 kEnergyTint * rim * uEmit;
     } else if (tCube.x > 0.0 && uCarving < 0.5) {
       // The earlier model: a cached emissive colour, breathing with the field.

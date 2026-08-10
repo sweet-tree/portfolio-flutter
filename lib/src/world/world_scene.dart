@@ -227,6 +227,22 @@ final double kCubeIor = qDouble('ior', 1).clamp(1.0, 2.4);
 /// derive, so it is a knob and the judgement is his.
 final double kEdgeWidth = qDouble('edge', 1).clamp(0.3, 2.0);
 
+/// How strongly the PLATFORM'S energy climbs into the cube. `?wall=`.
+///
+/// ⚠️ THE SAME FIELD, READ IN A SECOND PLACE — not a third effect resembling
+/// the other two. Until now the sheet's flow, the cube's interior and the pool
+/// beneath were three separate fields sharing a colour, with nothing feeding
+/// anything; he spotted that and it has been open since. Here the cube asks
+/// what the energy is doing on the sheet directly beneath it and carries that
+/// upward, so the continuity is structural rather than simulated.
+///
+/// ⚠️ AND IT IS VERY NEARLY FREE, which is the surprise and the reason it was
+/// worth trying before optimising the volumetric interior. The sheet's energy
+/// is already rendered once a frame at a sixteenth of the pixels, so this costs
+/// one projection and one lookup — against roughly 480 hashed noise evaluations
+/// per pixel for the fog inside. About a hundredfold, not a twofold.
+final double kWall = qDouble('wall', 1).clamp(0.0, 4.0);
+
 /// The cube's tuning knobs, live on the deployed build.
 ///
 /// ⚠️ THEY EXIST BECAUSE THE ALTERNATIVE IS WHAT WE DID ALL DAY: change a
@@ -569,7 +585,7 @@ class _CubeCache {
   static final String _knobs = [
     kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
     kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kCarvingModel,
-    kLetters, kAbsorb, kDisp, kCubeIor, kGlass, kOff,
+    kLetters, kAbsorb, kDisp, kCubeIor, kWall, kGlass, kOff,
     // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
     // before the first frame so this should always be true — but "should
     // always" is the kind of assumption a cache key exists to not rely on. If
@@ -829,7 +845,8 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(33, kDisp)
         ..setFloat(34, kCarvingModel)
         ..setFloat(35, kCubeIor)
-        ..setFloat(36, kEdgeWidth);
+        ..setFloat(36, kEdgeWidth)
+        ..setFloat(37, kWall);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass
