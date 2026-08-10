@@ -157,6 +157,13 @@ uniform float uInlay;
 /// solid, 2 frosted flat onto its faces. `?letters=`.
 uniform float uLetters;
 
+/// How much the glass swallows, as a multiplier. `?absorb=`.
+uniform float uAbsorb;
+
+/// How far apart the colour channels bend, as a multiple of real crown glass.
+/// `?disp=`.
+uniform float uDisp;
+
 /// Which model lights the carving: 1 glass filled with fog, 0 the earlier
 /// EMISSIVE surface. `?carving=`.
 ///
@@ -932,7 +939,18 @@ const float kInnerGain = 0.30;
 /// first, which is why a thick pane looked at edge-on is green. Here it is tuned
 /// toward the energy's own blue instead: the same physics, pointed at the scene
 /// this object belongs to rather than at a window.
-const vec3 kGlassAbsorb = vec3(1.25, 0.80, 0.48);
+/// ⚠️ SET FOR A BODY LIGHT CROSSES ONCE, AND IT NOW CROSSES IT THREE OR FOUR
+/// TIMES. That is what turned the solid opaque: the same coefficient, applied
+/// over folded paths several times longer, left almost nothing of the platform
+/// behind it — and the only thing bright enough to survive was the sky reflected
+/// off the OUTSIDE of the faces, which is why the cube filled up with stars that
+/// are not inside it at all.
+///
+/// So this is the base, and `?absorb=` scales it, because the right value is a
+/// judgement about how the object should read rather than a number anyone can
+/// derive.
+vec3 glassAbsorb() { return vec3(0.42, 0.27, 0.16) * uAbsorb; }
+#define kGlassAbsorb glassAbsorb()
 
 /// How much further blue bends than red on its way through the solid.
 ///
@@ -947,7 +965,30 @@ const vec3 kGlassAbsorb = vec3(1.25, 0.80, 0.48);
 /// several times that, because the cube is one object at a modest size on a
 /// screen and the honest number would be invisible — the same reason a film
 /// lens flare is drawn larger than physics allows.
-const float kDispersion = 0.055;
+/// ⚠️ AND IT IS ONLY HONEST WHILE THE THREE SAMPLES LAND WITHIN A PIXEL OF EACH
+/// OTHER. Real dispersion is continuous across the spectrum; this renders three
+/// wavelengths. On a smooth gradient nobody can tell. On a POINT SOURCE they can
+/// tell instantly — every star seen through the solid splits into three separate
+/// coloured dots instead of a short smear, because there is nothing in between
+/// them to fill the gap. This scene is mostly black with bright points in it,
+/// which is the worst possible case for the trick, and at several times the
+/// physical value it turned the cube to confetti.
+///
+/// `?disp=` scales it. Crown glass is about 0.017 and that is the honest
+/// ceiling here — past it the undersampling shows before the effect does.
+float dispersion() { return 0.017 * uDisp; }
+#define kDispersion dispersion()
+
+/// How many times light may turn back inside the solid before we stop following
+/// it.
+///
+/// ⚠️ FOUR IS NOT A BUDGET, IT IS WHERE THE ANSWER STOPS CHANGING. Each bounce
+/// carries less: absorbed over the leg it just travelled, and cut again by
+/// whatever escaped at the far end. By the fourth the beam is worth about a
+/// percent of what entered, which is below what eight bits can show. The loop
+/// also gives up early when what is left falls under that, so most rays cost far
+/// fewer than four.
+const int kGlassBounces = 4;
 
 /// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
 ///
@@ -3128,26 +3169,77 @@ vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit, out vec3 emit) 
 vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
                    vec2 uvScreen, float aspect, float rotation);
 
-/// Follows one ray from where it entered the solid to whatever it finds after
-/// leaving, bending it again on the way out.
+/// Follows light through the solid until it finds a way out, bouncing as many
+/// times as it must.
 ///
-/// ⚠️ TOTAL INTERNAL REFLECTION IS HANDLED HERE AND IT IS NOT AN EDGE CASE. Past
-/// the critical angle — about 42 degrees inside glass this dense — nothing gets
-/// out at all and the face becomes a perfect mirror seen from within. In a solid
-/// this thick that happens across large parts of every face, and it is most of
-/// why real glass has depth and structure rather than being a window. Leaving it
-/// out is what makes cheap glass look like tinted plastic.
-vec3 glassExit(vec3 pIn, vec3 dir, float spin, vec2 fragCoord, vec2 uvScreen,
+/// ⚠️ IN A CUBE, LIGHT ENTERING ONE FACE CANNOT LEAVE THROUGH ANY FACE BUT THE
+/// OPPOSITE ONE, AND THIS IS A THEOREM RATHER THAN A TENDENCY. Entering glass
+/// bends a ray toward the normal by at most the critical angle — about 42
+/// degrees at this density. Every other face of a cube is at 90 degrees to the
+/// one it entered, so the ray meets those at 48 degrees or more, which is past
+/// the escape limit. Every time. So a ray heading for the bottom or a side is
+/// ALWAYS turned back.
+///
+/// ⚠️ WHICH MEANS THE EARLIER VERSION COULD NOT POSSIBLY HAVE WORKED. It
+/// followed exactly one crossing and, when the ray could not get out, gave up
+/// and substituted a dark environment lookup. But "cannot get out" is the
+/// ordinary case in a cube, not the exception — so large parts of every face
+/// went flat black, and a flat black region inside a transparent object reads as
+/// a solid thing suspended in it. That is exactly what he described, and no
+/// amount of tuning would have moved it, because everything worth seeing happens
+/// after the bounce that was not being followed.
+///
+/// The platform below, the far edge cutting across, the space above it: all of
+/// it arrives on the second or third pass, folded. That folding is not an
+/// artefact to be tolerated — it is what makes a real glass block interesting to
+/// look at, and why a paperweight is full of repeated images of the room.
+///
+/// ⚠️ AND LIGHT ESCAPES AT EVERY BOUNCE, NOT ONLY THE LAST. Where the ray CAN
+/// get out, most of it does and a few percent carries on inside; where it
+/// cannot, all of it carries on. So the answer accumulates: each escape
+/// contributes what it found, weighted by how much of the beam was still
+/// travelling by then. Taking only the final escape would throw away the
+/// brightest term.
+vec3 glassPath(vec3 pIn, vec3 dir, float spin, vec2 fragCoord, vec2 uvScreen,
                float aspect, float rotation) {
   if (dot(dir, dir) < 1e-6) return vec3(0.0);
-  vec3 nx;
-  vec2 tx = cubeIntersect(pIn + dir * 1e-4, dir, 0.0, nx);
-  vec3 pOut = pIn + dir * max(tx.y, 0.0);
-  vec3 nOut = boxNormalAt(spinInto() * (pOut - cubeOrigin()));
-  vec3 out2 = refract(dir, -nOut, kIor);
-  if (dot(out2, out2) < 1e-6) return envColor(reflect(dir, -nOut));
-  return traceBackdrop(pOut + out2 * 1e-3, out2, spin, fragCoord, uvScreen,
-                       aspect, rotation);
+
+  vec3 sum = vec3(0.0);
+  vec3 carried = vec3(1.0);
+  vec3 p = pIn;
+  vec3 d = dir;
+  float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
+
+  for (int b = 0; b < kGlassBounces; b++) {
+    vec3 nx;
+    vec2 t = cubeIntersect(p + d * 1e-4, d, 0.0, nx);
+    float seg = max(t.y, 0.0);
+    vec3 pOut = p + d * seg;
+    vec3 nOut = boxNormalAt(spinInto() * (pOut - cubeOrigin()));
+
+    // Swallowed over the distance actually travelled on THIS leg. A ray that
+    // rattles around inside comes out deeper in colour than one that crosses
+    // straight through, which is true and is half of why thick glass looks
+    // thick.
+    carried *= exp(-kGlassAbsorb * seg);
+
+    vec3 out2 = refract(d, -nOut, kIor);
+    if (dot(out2, out2) > 1e-6) {
+      // It can get out. Most of it does; the rest stays in and keeps going.
+      float ct = abs(dot(out2, nOut));
+      float fr = f0 + (1.0 - f0) * pow(1.0 - ct, 5.0);
+      sum += carried * (1.0 - fr) *
+             traceBackdrop(pOut + out2 * 1e-3, out2, spin, fragCoord, uvScreen,
+                           aspect, rotation);
+      carried *= fr;
+    }
+    // Whatever is left turns back into the solid — all of it under total
+    // internal reflection, a few percent otherwise.
+    if (max(carried.r, max(carried.g, carried.b)) < 0.01) break;
+    d = reflect(d, nOut);
+    p = pOut;
+  }
+  return sum;
 }
 
 /// Everything EXCEPT the cube's own primary visibility: the background, and
@@ -3852,12 +3944,12 @@ void main() {
         float spread = 1.0 - min(dot(rR, rB), 1.0);
         if (spread > 3e-5) {
           through = vec3(
-            glassExit(pIn, rR, spin, fragCoord, uvScreen, aspect, rotation).r,
-            glassExit(pIn, r1, spin, fragCoord, uvScreen, aspect, rotation).g,
-            glassExit(pIn, rB, spin, fragCoord, uvScreen, aspect, rotation).b
+            glassPath(pIn, rR, spin, fragCoord, uvScreen, aspect, rotation).r,
+            glassPath(pIn, r1, spin, fragCoord, uvScreen, aspect, rotation).g,
+            glassPath(pIn, rB, spin, fragCoord, uvScreen, aspect, rotation).b
           );
         } else {
-          through = glassExit(pIn, r1, spin, fragCoord, uvScreen, aspect,
+          through = glassPath(pIn, r1, spin, fragCoord, uvScreen, aspect,
                               rotation);
         }
       }
@@ -3889,26 +3981,26 @@ void main() {
           : traceBackdrop(pIn + rr * 1e-3, rr, spin, fragCoord, uvScreen,
                           aspect, rotation);
 
-      // ⚠️ ABSORBED OVER THE DISTANCE IT TRAVELLED. This is what gives the solid
-      // its body: a ray clipping a corner arrives almost intact, one crossing
-      // the middle arrives much weaker, so the cube darkens toward its centre
-      // and stays clear at its edges. The fog is absorbed by only half as much,
-      // because on average it was made half way along the path rather than
-      // having crossed all of it.
-      vec3 absorbFull = exp(-kGlassAbsorb * chord);
-      vec3 absorbHalf = exp(-kGlassAbsorb * chord * 0.5);
-
-      // ⚠️ EACH WITH ITS OWN WEIGHT, NOT MIXED BY FRESNEL. A mix() puts the
+      // ⚠️ NO ABSORPTION APPLIED HERE, AND THAT IS A FIX RATHER THAN AN OMISSION.
+      // It used to be multiplied in twice: once inside each integration, and
+      // again on the result — left over from when both were simple averages over
+      // the chord. The interior fog came out at roughly a third of its intended
+      // strength, which is why switching it off changed nothing visible and why
+      // the body read as empty. Absorption now happens once, where the distance
+      // is actually known: per leg inside glassPath, and per step inside the fog
+      // integration.
+      //
+      // ⚠️ EACH TERM WITH ITS OWN WEIGHT, NOT MIXED BY FRESNEL. A mix() puts the
       // frosting's attenuation on the wrong side of the balance: what the frost
       // takes out of the transmitted half does not reappear in the reflected
-      // half — it scatters, and that scattering is drawn separately. `trans`
-      // already carries one-minus-Fresnel AND the frosting, so it weights
-      // transmission by itself; reflection takes Fresnel. Their sum still cannot
-      // exceed one, which is what keeps this energy conserving.
+      // half — it scatters. `trans` already carries one-minus-Fresnel AND the
+      // frosting, so it weights transmission by itself; reflection takes
+      // Fresnel. Their sum cannot exceed one, which is what keeps this energy
+      // conserving.
       float rim = isOff(256.0) ? 0.0 : emitSum.b * kEdgeGain;
-      emitted = through * absorbFull * trans +
+      emitted = through * trans +
                 reflected * fres +
-                inner * absorbHalf +
+                inner +
                 kEnergyTint * rim * uEmit;
     } else if (tCube.x > 0.0 && uCarving < 0.5) {
       // The earlier model: a cached emissive colour, breathing with the field.

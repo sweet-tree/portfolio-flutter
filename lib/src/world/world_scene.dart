@@ -160,6 +160,29 @@ final double kCarvingModel = qDouble('carving', 1).clamp(0.0, 1.0);
 /// nobody can see is not something anyone can have an opinion about.
 final double kLetters = qDouble('letters', 1).clamp(0.0, 2.0);
 
+/// How much the glass cube swallows over distance. `?absorb=`.
+///
+/// ⚠️ THE COEFFICIENT WAS SET FOR A BODY LIGHT CROSSES ONCE, and once the
+/// internal bounces were followed it crosses it three or four times. Same
+/// number, paths several times longer — so almost nothing of the platform
+/// behind survived, and the only thing left bright enough to see was the sky
+/// reflecting off the OUTSIDE of the faces. The cube appeared to be full of
+/// stars that were never inside it.
+///
+/// 0 makes it water-clear. It wants his eye rather than my arithmetic.
+final double kAbsorb = qDouble('absorb', 1).clamp(0.0, 4.0);
+
+/// How far apart the colour channels bend in the glass, as a multiple of real
+/// crown glass. `?disp=`.
+///
+/// ⚠️ IT WAS THREE TIMES PHYSICAL AND THE SCENE IS THE WORST CASE FOR THAT. The
+/// shader renders three wavelengths and real dispersion is continuous — so on a
+/// smooth gradient nobody can tell, but every STAR seen through the solid
+/// splits into three separate coloured dots rather than a short smear, because
+/// nothing in between fills the gap. A field of bright points on black is
+/// exactly where the shortcut shows, and it turned the cube to confetti.
+final double kDisp = qDouble('disp', 1).clamp(0.0, 4.0);
+
 /// The cube's tuning knobs, live on the deployed build.
 ///
 /// ⚠️ THEY EXIST BECAUSE THE ALTERNATIVE IS WHAT WE DID ALL DAY: change a
@@ -476,7 +499,7 @@ class _CubeCache {
   static final String _knobs = [
     kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
     kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kCarvingModel,
-    kLetters, kGlass, kOff,
+    kLetters, kAbsorb, kGlass, kOff,
     // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
     // before the first frame so this should always be true — but "should
     // always" is the kind of assumption a cache key exists to not rely on. If
@@ -724,7 +747,9 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(29, kEmit)
         ..setFloat(30, kInlay)
         ..setFloat(31, kLetters)
-        ..setFloat(32, kCarvingModel);
+        ..setFloat(32, kAbsorb)
+        ..setFloat(33, kDisp)
+        ..setFloat(34, kCarvingModel);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass
