@@ -223,6 +223,30 @@ uniform sampler2D uCarveMap;
 /// now is this times cubeEnergyFlow, computed live.
 uniform sampler2D uCubeEmit;
 
+/// The cube's entry normal, RESOLVED ACROSS THE PIXEL rather than taken from one
+/// ray through its centre.
+///
+/// ⚠️ THE COLOUR WAS ANTIALIASED AND THE GEOMETRY WAS NOT, and that asymmetry is
+/// the whole reason the edges came apart. The 64-sample pass resolves the cube's
+/// colour and its descriptor properly — but transmission, reflection and the lit
+/// rim are computed fresh every frame, and they were reading the geometry from a
+/// single ray through the pixel's centre. One ray gives one answer: this face or
+/// that face, hit or miss, with nothing in between.
+///
+/// So at a silhouette pixel whose centre ray MISSES while the cube still covers
+/// part of it, every live term vanished — including the rim, which is the bright
+/// line itself. And at an internal edge the normal jumped from one face to the
+/// other the instant the centre crossed, so the reflection stepped rather than
+/// blending. Both are a hard yes/no where the coverage underneath was a smooth
+/// fraction.
+///
+/// ⚠️ AND THE STONE CUBE HID IT COMPLETELY. There the live part was a small glow
+/// on top of a fully resolved surface, so a flaw in its geometry was invisible.
+/// On glass the live part IS the object, and the same flaw became the first
+/// thing anyone sees. A defect that only shows once something else is removed
+/// was never fixed — it was covered.
+uniform sampler2D uCubeNormal;
+
 out vec4 fragColor;
 
 /// ⚠️ STORED THROUGH A SQUARE ROOT, and read back through a square.
@@ -3594,6 +3618,8 @@ void main() {
   // How much energy this pixel COULD emit — cached, and multiplied per frame by
   // the flow that is actually arriving. See uLayer 7.
   vec3 emitSum = vec3(0.0);
+  // The entry normal, resolved over the pixel — see uCubeNormal.
+  vec3 nSum = nCube;
   float cov = 0.0;
   // Where in the pixel the cube ISN'T — see the backdrop note above.
   vec2 openOffset = vec2(0.0);
@@ -3644,6 +3670,11 @@ void main() {
     cov = cvg.r;
     openOffset = (cvg.gb - 0.5) * kOffsetRange;
     emitSum = decodeEnergy(texture(uCubeEmit, fragCoord / uSize).rgb);
+    // ⚠️ NOT NORMALISED BACK TO UNIT LENGTH. At an edge this is the average of
+    // two face normals and is SHORTER than one — and that shortness is the
+    // signal, not an error: it says the pixel straddles a corner. Renormalising
+    // would throw the blend away and put the hard switch back.
+    nSum = texture(uCubeNormal, fragCoord / uSize).rgb * 2.0 - 1.0;
   } else if (!isOff(64.0) &&
       (corners || abs(nearSurface) < px * 6.0 || edgeDist < px * 6.0)) {
     // 8x8 rotated grid with a Gaussian reconstruction filter.
@@ -3748,6 +3779,12 @@ void main() {
     }
     sum = acc / max(hitWeight, 1e-5);
     emitSum = accEmit / max(hitWeight, 1e-5);
+    // ⚠️ WEIGHTED BY COVERAGE, NOT BY HITS. Divided by the hit weight this would
+    // come back unit-length everywhere and say nothing about how much of the
+    // pixel the cube actually owns; divided by the total it shrinks toward zero
+    // at the silhouette, which is exactly the fade the live terms need so the
+    // rim stops dead at the outline instead of guessing past it.
+    nSum = (nA * wA + nB * wB + nC * wC) / max(weightSum, 1e-5);
     cov = hitWeight / max(weightSum, 1e-5);
     // No uncovered sliver at all means the backdrop is completely hidden, so
     // its value cannot matter; leave the ray at the centre.
@@ -3777,8 +3814,14 @@ void main() {
   // decides how much actually is. Square-rooted like the other stored radiance,
   // because it spends most of its range near zero and all of its interest at the
   // bottom.
-  if (uLayer > 6.5) {
+  if (uLayer > 6.5 && uLayer < 7.5) {
     fragColor = vec4(encodeEnergy(emitSum), 1.0);
+    return;
+  }
+  // The resolved entry normal. Signed, so it is shifted into 0..1 to survive an
+  // ordinary image — and read back WITHOUT renormalising, on purpose.
+  if (uLayer > 7.5) {
+    fragColor = vec4(nSum * 0.5 + 0.5, 1.0);
     return;
   }
 
@@ -3859,7 +3902,12 @@ void main() {
     // same substance, read in a different place. That is the answer to why the
     // first attempt could never be tuned into this one.
     vec3 emitted = vec3(0.0);
-    if (uMaterial > 1.5 && tCube.x > 0.0) {
+    // ⚠️ GATED ON COVERAGE, NOT ON THE CENTRE RAY HITTING. That single change is
+    // the edge fix. A pixel the cube half covers has a real, resolved answer
+    // waiting in the cache, and asking one ray through its centre whether the
+    // cube is "there" throws that away and replaces it with a coin toss — which
+    // is why the lit edges broke into dashes exactly where they matter most.
+    if (uMaterial > 1.5 && cov > 0.0) {
       // ── The inside of the glass cube, and what is behind it ──────────────
       //
       // ⚠️ EVERYTHING HERE MOVES, WHICH IS WHY IT IS HERE. The cube's picture is
@@ -3879,13 +3927,32 @@ void main() {
       // were edge-on. They came out as mirrors. Reflection is a property of the
       // ANGLE; frosting is a property of the SURFACE; one cannot be recovered
       // from the other once they have been multiplied together.
-      float nDotV = max(dot(nCube, -rd), 1e-4);
+      // ⚠️ THE RESOLVED NORMAL, AND ITS LENGTH IS DOING WORK. At an edge it is
+      // the average of two faces and therefore shorter than one — so its
+      // direction blends the two, and its length says how much of the pixel the
+      // cube owns. Both are needed: direction to stop the reflection stepping,
+      // length to stop the rim reaching past the outline.
+      float own = clamp(length(nSum), 0.0, 1.0);
+      vec3 nAvg = own > 1e-3 ? nSum / own : nCube;
+
+      float nDotV = max(dot(nAvg, -rd), 1e-4);
       // Reflectance from real glass; bending from `uIor`. See shadeGlassCube.
       float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
       float fres = f0 + (1.0 - f0) * pow(1.0 - nDotV, 5.0);
 
-      vec3 pIn = kEye + rd * tCube.x;
-      vec3 r1 = refract(rd, nCube, 1.0 / uIor);
+      // ⚠️ WHERE THE LIGHT ENTERS, SOLVED FROM THE RESOLVED NORMAL RATHER THAN
+      // FROM THE CENTRE RAY'S HIT. On a box the face carrying that normal is a
+      // known plane, so this is one division and it is CONTINUOUS across the
+      // silhouette — where the centre ray's own answer does not exist at all.
+      vec3 nl = spinInto() * nAvg;
+      vec3 roL = spinInto() * (kEye - cubeOrigin());
+      vec3 rdL = spinInto() * rd;
+      float denom = dot(rdL, nl);
+      float tEnter = abs(denom) > 1e-4
+          ? (uCubeHalf - dot(roL, nl)) / denom
+          : max(tCube.x, 0.0);
+      vec3 pIn = kEye + rd * max(tEnter, 0.0);
+      vec3 r1 = refract(rd, nAvg, 1.0 / uIor);
 
       // ⚠️ THE FOG IS INTEGRATED ALONG THE CHORD, not sampled at the surface,
       // and that is the difference between a solid full of something and a
@@ -3950,19 +4017,19 @@ void main() {
       if (!isOff(8.0)) {
         float iR = uIor - kDispersion;
         float iB = uIor + kDispersion;
-        vec3 rR = refract(rd, nCube, 1.0 / iR);
-        vec3 rB = refract(rd, nCube, 1.0 / iB);
+        vec3 rR = refract(rd, nAvg, 1.0 / iR);
+        vec3 rB = refract(rd, nAvg, 1.0 / iB);
         if (1.0 - min(dot(rR, rB), 1.0) > 3e-5) {
           through = vec3(
-            glassPath(pIn, rd, nCube, iR, spin, fragCoord, uvScreen, aspect,
+            glassPath(pIn, rd, nAvg, iR, spin, fragCoord, uvScreen, aspect,
                       rotation).r,
-            glassPath(pIn, rd, nCube, uIor, spin, fragCoord, uvScreen, aspect,
+            glassPath(pIn, rd, nAvg, uIor, spin, fragCoord, uvScreen, aspect,
                       rotation).g,
-            glassPath(pIn, rd, nCube, iB, spin, fragCoord, uvScreen, aspect,
+            glassPath(pIn, rd, nAvg, iB, spin, fragCoord, uvScreen, aspect,
                       rotation).b
           );
         } else {
-          through = glassPath(pIn, rd, nCube, uIor, spin, fragCoord, uvScreen,
+          through = glassPath(pIn, rd, nAvg, uIor, spin, fragCoord, uvScreen,
                               aspect, rotation);
         }
       }
@@ -3988,7 +4055,7 @@ void main() {
       // faint. The dispersion test above is gated correctly by that standard: it
       // asks whether the three channels have separated at all, which is a
       // question about whether the answers differ.
-      vec3 rr = reflect(rd, nCube);
+      vec3 rr = reflect(rd, nAvg);
       vec3 reflected = isOff(16.0)
           ? envColor(rr)
           : traceBackdrop(pIn + rr * 1e-3, rr, spin, fragCoord, uvScreen,

@@ -370,6 +370,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _coverShader;
   /// A seventh, for the carving's emission potential — same reasoning again.
   ui.FragmentShader? _emitShader;
+  /// An eighth, for the cube's resolved entry normal — same reasoning again.
+  ui.FragmentShader? _normalShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -389,6 +391,7 @@ class _WorldSceneState extends State<WorldScene>
     _energyShader = Shaders.scene?.fragmentShader();
     _coverShader = Shaders.scene?.fragmentShader();
     _emitShader = Shaders.scene?.fragmentShader();
+    _normalShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -412,6 +415,7 @@ class _WorldSceneState extends State<WorldScene>
     _energyShader?.dispose();
     _coverShader?.dispose();
     _emitShader?.dispose();
+    _normalShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     _bandCache.dispose();
@@ -427,8 +431,10 @@ class _WorldSceneState extends State<WorldScene>
     final energyShader = _energyShader;
     final coverShader = _coverShader;
     final emitShader = _emitShader;
+    final normalShader = _normalShader;
     if (shader == null ||
         emitShader == null ||
+        normalShader == null ||
         coverShader == null ||
         energyShader == null ||
         layerShader == null ||
@@ -445,6 +451,7 @@ class _WorldSceneState extends State<WorldScene>
         energyShader: energyShader,
         coverShader: coverShader,
         emitShader: emitShader,
+        normalShader: normalShader,
         lightCache: _lightCache,
         bandCache: _bandCache,
         time: _time,
@@ -488,6 +495,17 @@ class _CubeCache {
   /// against this. Folding the two together would make the whole cube
   /// time-varying and throw away the caching that took the frame from 45 to 75.
   ui.Image? emit;
+
+  /// The cube's entry normal, resolved across each pixel — see uLayer 8.
+  ///
+  /// ⚠️ THE COLOUR WAS ANTIALIASED AND THE GEOMETRY WAS NOT. Transmission,
+  /// reflection and the lit rim are computed live every frame, and they were
+  /// reading the cube's geometry from a single ray through the pixel's centre —
+  /// one ray, one answer, this face or that, hit or miss. So a silhouette pixel
+  /// whose centre ray missed lost every live term including the rim, and an
+  /// internal edge stepped instead of blending. Both are a hard yes/no sitting
+  /// on top of a coverage that was already a smooth fraction.
+  ui.Image? normal;
   String? signature;
 
   /// ⚠️ A SAMPLER THAT IS DECLARED MUST BE BOUND, ALWAYS.
@@ -547,6 +565,8 @@ class _CubeCache {
     cover = null;
     emit?.dispose();
     emit = null;
+    normal?.dispose();
+    normal = null;
     _placeholder?.dispose();
     _placeholder = null;
     signature = null;
@@ -662,6 +682,7 @@ class _ScenePainter extends CustomPainter {
     required this.energyShader,
     required this.coverShader,
     required this.emitShader,
+    required this.normalShader,
     required this.lightCache,
     required this.bandCache,
     required this.time,
@@ -678,6 +699,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader energyShader;
   final ui.FragmentShader coverShader;
   final ui.FragmentShader emitShader;
+  final ui.FragmentShader normalShader;
   final double time;
   final double camera;
   final double velocity;
@@ -811,6 +833,10 @@ class _ScenePainter extends CustomPainter {
         ..setImageSampler(5, Carving.map ?? blank,
             filterQuality: FilterQuality.low)
         ..setImageSampler(6, cache.emit ?? blank,
+            filterQuality: FilterQuality.low)
+        // Smooth, like the rest of the cube's caches: this is a direction that
+        // varies across the pixel, and the whole point of it is the blend.
+        ..setImageSampler(7, cache.normal ?? blank,
             filterQuality: FilterQuality.low);
     }
 
@@ -884,6 +910,7 @@ class _ScenePainter extends CustomPainter {
     if (cache.signature != want ||
         cache.image == null ||
         cache.emit == null ||
+        cache.normal == null ||
         cache.cover == null) {
       // Coverage first: the shading pass and the scene pass both read it.
       configure(coverShader, 6, low);
@@ -931,6 +958,19 @@ class _ScenePainter extends CustomPainter {
       emitPic.dispose();
       cache.emit?.dispose();
       cache.emit = freshEmit;
+
+      // The resolved entry normal — what makes the live terms antialias.
+      configure(normalShader, 8, low);
+      bind(normalShader, band: bandImage, energy: energyImage);
+      final normRec = ui.PictureRecorder();
+      Canvas(normRec)
+          .drawRect(Offset.zero & low, Paint()..shader = normalShader);
+      final normPic = normRec.endRecording();
+      final freshNorm =
+          normPic.toImageSync(low.width.toInt(), low.height.toInt());
+      normPic.dispose();
+      cache.normal?.dispose();
+      cache.normal = freshNorm;
 
       cache.signature = want;
     }
