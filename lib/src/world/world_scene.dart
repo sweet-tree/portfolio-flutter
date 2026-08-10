@@ -165,7 +165,12 @@ final double kCarvingModel = qDouble('carving', 1).clamp(0.0, 1.0);
 ///
 /// Both are built rather than described, because a paragraph about two things
 /// nobody can see is not something anyone can have an opinion about.
-final double kLetters = qDouble('letters', 1).clamp(0.0, 3.0);
+/// ⚠️ 3 IS THE DEFAULT AS OF 2026-08-10 — his call. Everything he judged the
+/// mark on was looked at through `?letters=3`, while a plain load still showed
+/// 1, the suspended version he had rejected days earlier. A default nobody uses
+/// is a default that is wrong, and this one was worse than wrong: it meant the
+/// site a visitor saw was not the site being designed.
+final double kLetters = qDouble('letters', 3).clamp(0.0, 3.0);
 
 /// How much the glass cube swallows over distance. `?absorb=`.
 ///

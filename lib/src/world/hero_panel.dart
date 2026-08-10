@@ -105,6 +105,7 @@ class _HeroPanelState extends State<HeroPanel> {
                         // them all against this frame and takes the one that
                         // sets the largest leading line — no breakpoint.
                         arrangements: location.statement,
+                        payoff: location.payoff,
                         path: location.path,
                         panel: _panel,
                         // Flush left, like everything else in the hero. Each
@@ -314,6 +315,7 @@ class _Fit {
 class _Name extends StatelessWidget {
   const _Name({
     required this.arrangements,
+    required this.payoff,
     required this.path,
     required this.panel,
     required this.align,
@@ -321,6 +323,9 @@ class _Name extends StatelessWidget {
 
   /// Every arrangement the copy allows. The frame picks one.
   final List<List<List<String>>> arrangements;
+
+  /// The words the sentence answers to — the copy's call. See Location.payoff.
+  final List<String> payoff;
   final String path;
   final TextAlign align;
 
@@ -689,6 +694,9 @@ class _Name extends StatelessWidget {
             // of register with the letters.
             child: TypeMaskCapture(
               panel: panel,
+              // Which word the sentence is about — the copy's call, not the
+              // renderer's. See Location.payoff.
+              payoff: payoff,
               span: span(const Color(0xFFFFFFFF)),
               signature: Object.hash(
                 Object.hashAll(fit.lines),

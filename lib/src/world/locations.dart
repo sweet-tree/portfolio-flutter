@@ -20,6 +20,7 @@ class Location {
     required this.label,
     required this.role,
     required this.statement,
+    this.payoff = const [],
   });
 
   /// The real URL. Has to survive a refresh and paste into a CV.
@@ -65,6 +66,27 @@ class Location {
   /// the sentence rather than its setting.
   String get title =>
       statement.first.expand((part) => part).join(' ');
+
+  /// THE WORDS THE ENERGY ANSWERS TO — any number of them, or none.
+  ///
+  /// ⚠️ NAMED IN THE COPY, NOT FOUND BY THE RENDERER, because which words carry
+  /// the claim is an authoring decision and nothing else knows it. The
+  /// statement is set to a different arrangement on every frame shape, so
+  /// nothing about where a word LANDS can be written down — only which word it
+  /// is. The layout finds the rectangles afterwards.
+  ///
+  /// ⚠️ A LIST, AND PHRASES ARE ALLOWED, because the sentence does not divide
+  /// into one special word and the rest. The energy is meant to CHANGE as it
+  /// crosses — neutral through the claim, raw through "raw data", full acid by
+  /// "the last pixel" — and that is several regions, in order, not a single
+  /// highlight. Empty means the whole statement is treated as one region, which
+  /// is exactly what it does today.
+  ///
+  /// Each entry is matched on WORD BOUNDARIES so a stem cannot be claimed by a
+  /// longer word, and every occurrence is taken. A phrase falling across a line
+  /// break yields one rectangle per line rather than one box spanning both,
+  /// because the space between them belongs to other words.
+  final List<String> payoff;
 
   /// Filler, sized to overflow the panel so scrolling has something to do.
   String get body => List.filled(6, _filler).join('\n\n');
@@ -118,6 +140,12 @@ const List<Location> kLocations = [
         ['from raw data', 'to the last pixel.'],
       ],
     ],
+    // ⚠️ ONE WORD, AND IT IS THE END OF THE CLAIM. "from raw data to the last
+    // pixel" is a journey, and the energy arriving at its destination is the
+    // whole point — lighting both ends says they matter equally, which is not
+    // what the sentence says. His call, made on the running page against the
+    // two-word version.
+    payoff: ['pixel'],
   ),
   Location(
     path: '/work',
