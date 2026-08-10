@@ -934,6 +934,21 @@ const float kInnerGain = 0.30;
 /// this object belongs to rather than at a window.
 const vec3 kGlassAbsorb = vec3(1.25, 0.80, 0.48);
 
+/// How much further blue bends than red on its way through the solid.
+///
+/// ⚠️ THIS IS WHERE GLASS STOPS LOOKING LIKE PERSPEX. Denser media refract short
+/// wavelengths harder, so anything seen through a thick piece arrives split into
+/// a thin fringe of colour along its edges. It is the most recognisable
+/// signature real glass has, and it cannot be imitated with a tint because it
+/// depends on ANGLE — none at all looking straight in, widening toward the
+/// silhouette, which is exactly where the eye goes.
+///
+/// Real crown glass spans about 0.017 between the red and blue ends. This is
+/// several times that, because the cube is one object at a modest size on a
+/// screen and the honest number would be invisible — the same reason a film
+/// lens flare is drawn larger than physics allows.
+const float kDispersion = 0.055;
+
 /// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
 ///
 /// The octave amplitudes are known — 0.5, 0.25, 0.125, 0.0625, 0.03125,
@@ -3110,6 +3125,31 @@ vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit, out vec3 emit) 
   return shadeCube(kEye + rd * t.x, n, -rd, 1.0, spin, lod, emit);
 }
 
+vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
+                   vec2 uvScreen, float aspect, float rotation);
+
+/// Follows one ray from where it entered the solid to whatever it finds after
+/// leaving, bending it again on the way out.
+///
+/// ⚠️ TOTAL INTERNAL REFLECTION IS HANDLED HERE AND IT IS NOT AN EDGE CASE. Past
+/// the critical angle — about 42 degrees inside glass this dense — nothing gets
+/// out at all and the face becomes a perfect mirror seen from within. In a solid
+/// this thick that happens across large parts of every face, and it is most of
+/// why real glass has depth and structure rather than being a window. Leaving it
+/// out is what makes cheap glass look like tinted plastic.
+vec3 glassExit(vec3 pIn, vec3 dir, float spin, vec2 fragCoord, vec2 uvScreen,
+               float aspect, float rotation) {
+  if (dot(dir, dir) < 1e-6) return vec3(0.0);
+  vec3 nx;
+  vec2 tx = cubeIntersect(pIn + dir * 1e-4, dir, 0.0, nx);
+  vec3 pOut = pIn + dir * max(tx.y, 0.0);
+  vec3 nOut = boxNormalAt(spinInto() * (pOut - cubeOrigin()));
+  vec3 out2 = refract(dir, -nOut, kIor);
+  if (dot(out2, out2) < 1e-6) return envColor(reflect(dir, -nOut));
+  return traceBackdrop(pOut + out2 * 1e-3, out2, spin, fragCoord, uvScreen,
+                       aspect, rotation);
+}
+
 /// Everything EXCEPT the cube's own primary visibility: the background, and
 /// the glass surface with its reflections, shadow and occlusion.
 ///
@@ -3724,6 +3764,7 @@ void main() {
       // through it) and this holds what is not.
       float chord = emitSum.r * cubeChordMax();
       float trans = emitSum.g;
+      float fres = 1.0 - trans;
       vec3 pIn = kEye + rd * tCube.x;
       vec3 r1 = refract(rd, nCube, 1.0 / kIor);
 
@@ -3735,14 +3776,28 @@ void main() {
       // falloff — it is the shape.
       vec3 inner = vec3(0.0);
       if (!isOff(128.0) && chord > 1e-4) {
-        const int kSteps = 6;
+        // ⚠️ FRONT TO BACK, WITH ABSORPTION APPLIED AS IT GOES — not a mean of
+        // the samples, which is what this was and is why the interior read as
+        // flat haze. Averaging a turbulent field is a low-pass filter: it throws
+        // away exactly the structure that makes the sheet's energy look like
+        // cloud, and hands back its mean, which is fog with nothing in it.
+        //
+        // Integrating properly keeps it, and gives the one cue a mean cannot:
+        // near fog hides far fog. What is at the front of the solid arrives
+        // whole, what is deep inside arrives dimmed by everything in front of
+        // it — so the interior gains depth ORDER rather than being a uniform
+        // slab, and the whole body starts reading as a volume you are looking
+        // into rather than a colour you are looking at.
+        const int kSteps = 10;
         float dt = chord / float(kSteps);
-        float acc = 0.0;
+        vec3 acc = vec3(0.0);
         for (int i = 0; i < kSteps; i++) {
-          vec3 sp = pIn + r1 * (dt * (float(i) + 0.5));
-          acc += smoothstep(kFogLow, kFogHigh, carveFogField(sp));
+          float s = dt * (float(i) + 0.5);
+          vec3 sp = pIn + r1 * s;
+          float d = smoothstep(kFogLow, kFogHigh, carveFogField(sp));
+          acc += d * exp(-kGlassAbsorb * s) * dt;
         }
-        float ambient = (acc / float(kSteps)) * chord * kInnerGain;
+        vec3 ambient = acc * kInnerGain;
 
         // ⚠️ THE LETTERS ARE THE SAME FOG, DENSER — not a second substance added
         // into the first. Their brightness is the field's own value at the plate,
@@ -3763,22 +3818,57 @@ void main() {
       // far side bent a second time, so the sheet and the stars behind arrive
       // displaced — the single most convincing thing a thick transparent solid
       // does, and the one thing a surface trick can never imitate.
+      //
+      // ⚠️ AND WITH DISPERSION, WHICH IS WHERE GLASS STOPS LOOKING LIKE PERSPEX.
+      // Denser media bend blue further than red, so what comes through a thick
+      // solid arrives split — a thin fringe of colour along every high-contrast
+      // edge seen through it. It is the single most recognisable signature of
+      // real glass and it cannot be faked with a tint, because it depends on the
+      // ANGLE: dead centre there is none, and it widens toward the edges exactly
+      // where a viewer is already looking for it.
+      //
+      // ⚠️ THREE TRACES ONLY WHERE THERE IS SOMETHING TO SEE. Head-on the three
+      // channels leave within a whisker of each other, so one trace answers all
+      // three and the extra two would be spent proving they agree. That test is
+      // coherent across the screen — the strongly-refracting band hugs the
+      // silhouette — so the branch actually pays here, unlike the scattered ones
+      // this project has tried before.
       vec3 through = vec3(0.0);
       if (!isOff(8.0)) {
-        vec3 nx;
-        vec2 tx = cubeIntersect(pIn + r1 * 1e-4, r1, 0.0, nx);
-        vec3 pOut = pIn + r1 * max(tx.y, 0.0);
-        vec3 nOut = boxNormalAt(spinInto() * (pOut - cubeOrigin()));
-        vec3 r2 = refract(r1, -nOut, kIor);
-        // A zero direction is TOTAL INTERNAL REFLECTION: past the critical angle
-        // nothing gets out at all, and the face becomes a perfect mirror from
-        // the inside. Common in a solid this thick, and leaving it out is what
-        // makes cheap glass look like tinted plastic.
-        through = (dot(r2, r2) < 1e-6)
-            ? envColor(reflect(r1, -nOut))
-            : traceBackdrop(pOut + r2 * 1e-3, r2, spin, fragCoord, uvScreen,
-                            aspect, rotation);
+        vec3 rR = refract(rd, nCube, 1.0 / (kIor - kDispersion));
+        vec3 rB = refract(rd, nCube, 1.0 / (kIor + kDispersion));
+        float spread = 1.0 - min(dot(rR, rB), 1.0);
+        if (spread > 3e-5) {
+          through = vec3(
+            glassExit(pIn, rR, spin, fragCoord, uvScreen, aspect, rotation).r,
+            glassExit(pIn, r1, spin, fragCoord, uvScreen, aspect, rotation).g,
+            glassExit(pIn, rB, spin, fragCoord, uvScreen, aspect, rotation).b
+          );
+        } else {
+          through = glassExit(pIn, r1, spin, fragCoord, uvScreen, aspect,
+                              rotation);
+        }
       }
+
+      // ⚠️ WHAT IT REFLECTS IS NOW A REAL RAY INTO THE SCENE, and this is the
+      // largest single difference from the sheet's glass, which has always
+      // traced its reflections properly. The cube was reflecting an ENVIRONMENT
+      // APPROXIMATION — a smooth function of direction that knows the sky is
+      // brighter above than below and nothing else. It cannot show the sheet, so
+      // an object standing on a glowing surface had no sign of it in its own
+      // faces, which is the sort of absence the eye reads as wrong without being
+      // able to name.
+      //
+      // ⚠️ AND IT IS TRACED ONLY WHERE FRESNEL MAKES IT WORTH SEEING. Looking
+      // straight into a face, four percent comes back and the approximation is
+      // indistinguishable; toward the silhouette it climbs to everything, and
+      // there the difference is the whole material. Same coherent band as the
+      // dispersion test above.
+      vec3 rr = reflect(rd, nCube);
+      vec3 reflected = fres > 0.055 && !isOff(16.0)
+          ? traceBackdrop(pIn + rr * 1e-3, rr, spin, fragCoord, uvScreen,
+                          aspect, rotation)
+          : envColor(rr);
 
       // ⚠️ ABSORBED OVER THE DISTANCE IT TRAVELLED. This is what gives the solid
       // its body: a ray clipping a corner arrives almost intact, one crossing
@@ -3789,8 +3879,12 @@ void main() {
       vec3 absorbFull = exp(-kGlassAbsorb * chord);
       vec3 absorbHalf = exp(-kGlassAbsorb * chord * 0.5);
 
+      // ⚠️ REFLECT OR TRANSMIT, NEVER BOTH ADDED — the same energy-conserving
+      // mix the sheet uses, and the reason a dielectric looks like one. Adding
+      // them is how glass ends up brighter than what is behind it.
       float rim = isOff(256.0) ? 0.0 : emitSum.b * kEdgeGain;
-      emitted = inner * absorbHalf + through * trans * absorbFull +
+      emitted = mix(through * absorbFull, reflected, fres) +
+                inner * absorbHalf +
                 kEnergyTint * rim * uEmit;
     } else if (tCube.x > 0.0 && uCarving < 0.5) {
       // The earlier model: a cached emissive colour, breathing with the field.
