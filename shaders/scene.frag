@@ -1947,8 +1947,8 @@ vec2 carveFaceUv(vec3 lp, vec3 nl) {
 
 /// How the atlas was encoded — mirrors kCarveSpread and the cell size in
 /// carving.dart. In CELL PIXELS, which is why it is divided back out below.
-const float kGlyphSpread = 20.0;
-const float kGlyphCell = 256.0;
+const float kGlyphSpread = 40.0;
+const float kGlyphCell = 512.0;
 const float kGlyphCells = 2.0;
 
 // How much of a face the symbol spans is `uGlyph` — `?glyph=`. It was a
@@ -3039,7 +3039,14 @@ vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
   if (uLetters > 1.5) {
     vec3 nl = spinInto() * n;
     float aa = max(lod / max(uCubeHalf, 1e-4), 1e-5);
-    float etch = clamp(-glyphDist(carveFaceUv(local, nl), nl) / aa, 0.0, 1.0);
+    // ⚠️ THE RAMP IS CENTRED ON THE EDGE, and it was not. Ramping from the
+    // boundary INWARD over a whole pixel puts the entire transition inside the
+    // letter: half a pixel of the stroke is eaten, and what is left is blurred
+    // on one side only. A pixel exactly on the edge is half covered, so the
+    // ramp has to straddle it — which is the difference between antialiasing a
+    // shape and quietly shrinking it.
+    float etch =
+        clamp(0.5 - glyphDist(carveFaceUv(local, nl), nl) / aa, 0.0, 1.0);
     frost = etch * (envColor(n) * 0.55 + vec3(nDotL) * 0.30);
     trans *= 1.0 - etch * 0.88;
   }

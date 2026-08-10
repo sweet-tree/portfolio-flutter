@@ -41,13 +41,29 @@ const List<String> kCarvedSymbols = ['Di', 'Se'];
 /// is located at, which is a far weaker requirement. The shader rebuilds the
 /// boundary by comparing distances, so a cell only has to locate the shape well
 /// enough to measure from.
-const int kCarveCell = 256;
+///
+/// ⚠️ BUT "WEAKER" IS NOT "FREE", AND 256 WAS TOO FEW. On a 2x display with the
+/// cube at full size the symbols are drawn 400 to 600 device pixels tall, so
+/// the field had fewer texels than the letter had pixels. The zero crossing
+/// stays sub-texel accurate — that is what a distance field is for — but
+/// between texels it is only linear, so curves go faintly polygonal and thin
+/// features like the stem of the `i` lose their definition. That is what reads
+/// as "not crispy": the field being asked for detail it does not contain,
+/// rather than the shader blurring anything.
+///
+/// Paid once at startup: the transform is linear in the pixel count, and the
+/// atlas is thrown away as soon as it has been handed to the GPU.
+const int kCarveCell = 512;
 
 /// How far from an edge the field still carries a usable distance, in cell
 /// pixels. Past it the value saturates, which costs nothing: no one asks about
 /// distances that large, and spending the eight bits on the range that matters
 /// is what keeps precision high where the edge actually is.
-const double kCarveSpread = 20;
+/// ⚠️ SCALED WITH THE CELL, or the letters would change shape rather than
+/// sharpness. This is a distance measured in CELL PIXELS, so doubling the cell
+/// without doubling this would halve how far from an edge the field still
+/// carries a usable value — and the shader reads that range back as a length.
+const double kCarveSpread = 40;
 
 abstract final class Carving {
   /// The packed distance field: one row of cells, one per symbol.
