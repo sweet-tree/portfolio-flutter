@@ -44,12 +44,14 @@ uniform float uClouds;     // 0 = off, 1 = the flying volumetric energy
 // so inserting one above would silently shift every index after it and every
 // value would land in the wrong slot.
 //
-// 0 = the plain near-black cube this project ran on until the material existed;
-// 1 = mossed stone. `?mat=0` to compare them on the real scene.
+// WHAT THE CUBE IS MADE OF — a selector, not a dial:
 //
-// This is not a tuning dial — it is an A/B for a decision about what the object
-// IS. A black cube reads as a modern abstract mark; a mossed one reads as an
-// artifact. Both are defensible and the choice is not a shader's to make.
+//   0  the plain near-black solid this project ran on for days
+//   1  ancient mossed Inca masonry, with a carving in it
+//   2  glass — the same material as the sheet it stands on
+//
+// Each is a different claim about what the mark IS, and that is not a shader's
+// choice to make. All three stay reachable rather than replacing one another.
 uniform float uMaterial;
 
 // ⚠️ THE TUNING KNOBS, ALL APPENDED AFTER uMaterial — see the note above about
@@ -150,6 +152,17 @@ uniform float uEmit;
 /// How full of glass the carved channel is. 1 pours it level with the stone;
 /// below that it sits lower and the stone lips over it. `?inlay=`.
 uniform float uInlay;
+
+/// Which model lights the carving: 1 glass filled with fog, 0 the earlier
+/// EMISSIVE surface. `?carving=`.
+///
+/// ⚠️ THE EMISSIVE ONE IS KEPT ON PURPOSE AND IS NOT DEAD CODE. It was rejected
+/// for the ancient cube, but it is a whole design that took a day to reach and
+/// this object is likely to be lifted into a project of its own later. Reaching
+/// it through git means rebuilding to look at it; reaching it through a knob
+/// means comparing two designs on one screen in one moment, which is the only
+/// comparison that has ever settled anything here.
+uniform float uCarving;
 
 uniform sampler2D uCubeLayer;
 
@@ -1742,6 +1755,7 @@ struct CubeSurface {
   float fuzz;         // how much of this is a thicket rather than a solid
   vec3 f0;            // reflectance head-on
   CarveGlass glass;   // the inlay, if this point is on one
+  vec3 emission;      // light this surface MAKES — the `?carving=0` model only
 };
 
 /// Squashes a sample position along one direction, so a field sampled with it
@@ -2016,6 +2030,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
     plain.fuzz = 0.0;
     plain.f0 = vec3(0.10, 0.10, 0.115);
     plain.glass = carveGlass(p, n, v, lod);
+    plain.emission = vec3(0.0);
     return plain;
   }
 
@@ -2265,11 +2280,13 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
   // the energy must never do. Filling the channel with glass deletes the
   // question: the letters cannot be green because there is nothing green in
   // them. Stone lips above the pour keep their growth, which is where it belongs.
-  // ⚠️ TIED TO THE GLASS SWITCH, not applied unconditionally. With `?off=512`
-  // there is no glass in the channel, so there is nothing to stop growth
-  // reaching into it — and the point of that switch is to see the cut as bare
-  // stone, which is what it looked like before the glass existed.
-  moss *= isOff(512.0) ? 1.0 : (1.0 - glass.amount);
+  // ⚠️ TIED TO THERE ACTUALLY BEING GLASS, not applied unconditionally. With
+  // `?off=512` there is none in the channel, and under `?carving=0` the channel
+  // is not glass at all — in that model the growth IS the effect, because the
+  // light comes out through it. Suppressing growth in either case would preserve
+  // a photograph of the old design rather than the design.
+  bool channelIsGlass = !isOff(512.0) && uCarving > 0.5;
+  moss *= channelIsGlass ? (1.0 - glass.amount) : 1.0;
   // How close bare rock is to being overtaken. A clump standing proud throws a
   // little shade onto the stone beside it, and that contact darkening is most
   // of what makes growth sit ON a surface rather than in it.
@@ -2344,7 +2361,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
   // of. Suppressed in the carving for the same reason it is suppressed in the
   // joints, by the same kind of term.
   crust *= (1.0 - moss) * bevel * uLichen *
-           (isOff(512.0) ? 1.0 : (1.0 - glass.amount));
+           (channelIsGlass ? (1.0 - glass.amount) : 1.0);
 
   // Pale sage, and paler still at the growing edge, which is the newest and
   // thinnest part of the crust. Some colonies run yellow — a different species
@@ -2488,7 +2505,7 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
   // What is NOT here is the fog. That is the one part of this object that moves,
   // so it cannot live in a cached picture — it is applied live in the scene pass
   // from the path length below. See CarveGlass.
-  if (!isOff(512.0)) {
+  if (!isOff(512.0) && uCarving > 0.5) {
     s.albedo = mix(s.albedo, vec3(0.004), glass.amount);
     s.roughness = mix(s.roughness, max(0.055, kMinRoughness), glass.amount);
     s.f0 = mix(s.f0, vec3(0.04), glass.amount);
@@ -2497,6 +2514,28 @@ CubeSurface cubeSurface(vec3 p, vec3 n, vec3 v, float spin, float lod,
     s.normal = normalize(mix(s.normal, n, glass.amount));
   }
   s.glass = glass;
+
+  // ── THE EARLIER MODEL — `?carving=0`, kept whole ─────────────────────────
+  //
+  // The channel as an EMISSIVE SURFACE rather than a volume: its floor gives off
+  // light in proportion to how deep the cut is, and that light picks up the
+  // colour of the moss it passes through on the way out. Rejected for this
+  // object, and correctly — a glowing surface has one colour, no thickness and
+  // no inside, so it can never read as the fog under the sheet no matter how the
+  // colour is matched. But it is a complete design, and it is one knob away
+  // rather than one rebuild away.
+  //
+  // ⚠️ IT NEEDS THE MOSS BACK IN THE CHANNEL, because the green IS the effect
+  // here — light through growth, lit from behind. Restoring the model without
+  // restoring what fed it would be preserving a photograph of it.
+  s.emission = vec3(0.0);
+  if (uCarving < 0.5) {
+    float depth = carveDepthAt(lp, nl, lod);
+    float carve = clamp(
+      depth / max(kCarveDepth * uCubeHalf * uCarve, 1e-6), 0.0, 1.0);
+    vec3 through = mix(vec3(1.0), mossC * 9.0, moss * 0.85);
+    s.emission = kEnergyTint * carve * uEmit * 1.6 * through;
+  }
   return s;
 }
 
@@ -2798,11 +2837,17 @@ vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod,
   // Packed to survive an 8-bit texture: the path is normalised against the
   // longest one the geometry can produce, and the transmission is weighted by
   // coverage so a pixel half on the letter contributes half.
-  emit = vec3(
-    clamp(s.glass.path / kCarvePathMax, 0.0, 1.0),
-    s.glass.trans * s.glass.amount,
-    s.glass.edge
-  );
+  //
+  // ⚠️ THE SAME TEXTURE CARRIES A DIFFERENT MEANING PER MODEL, which is worth
+  // being explicit about rather than clever: under `?carving=0` it is a colour
+  // and is encoded like radiance, under `?carving=1` it is three geometric
+  // quantities and is stored raw. The mode decides how to read it, and both
+  // models get the same caching and the same live modulation as a result.
+  emit = uCarving < 0.5
+      ? encodeEnergy(s.emission)
+      : vec3(clamp(s.glass.path / kCarvePathMax, 0.0, 1.0),
+             s.glass.trans * s.glass.amount,
+             s.glass.edge);
   return direct + ibl * s.occlusion;
 }
 
@@ -3422,7 +3467,12 @@ void main() {
     // same substance, read in a different place. That is the answer to why the
     // first attempt could never be tuned into this one.
     vec3 emitted = vec3(0.0);
-    if (tCube.x > 0.0 && emitSum.r + emitSum.b > 1e-4) {
+    if (tCube.x > 0.0 && uCarving < 0.5) {
+      // The earlier model: a cached emissive colour, breathing with the field.
+      vec3 e = decodeEnergy(emitSum);
+      float f = carveFogField(kEye + rd * tCube.x);
+      emitted = e * mix(0.34, 1.0, smoothstep(0.30, 0.66, f));
+    } else if (tCube.x > 0.0 && emitSum.r + emitSum.b > 1e-4) {
       float path = emitSum.r * kCarvePathMax;
       vec3 hit = kEye + rd * tCube.x;
       // Sampled at the middle of the glass rather than at its surface: what is

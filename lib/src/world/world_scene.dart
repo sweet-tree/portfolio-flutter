@@ -114,14 +114,35 @@ final double kGlass = qDouble('glass', 1);
 /// Cube size as a fraction of the viewport's shortest side.
 const double kCubeSize = 0.26;
 
-/// The cube's material: 0 the plain near-black solid, 1 mossed stone.
+/// What the cube is made of. `?mat=`.
 ///
-/// ⚠️ NOT A TUNING DIAL. It is an A/B for a decision about what the object IS —
-/// a modern abstract mark, or an artifact — and that is a decision about the
-/// site's story rather than about a number. `?mat=0` puts the plain cube in the
-/// current renderer so the two can be compared on one screen in one moment,
-/// which is the only comparison worth making.
-final double kMaterial = qDouble('mat', 1);
+///   0  the plain near-black solid this project ran on for days
+///   1  ancient mossed Inca masonry, with a carving in it
+///   2  glass — the same material as the sheet it stands on
+///
+/// ⚠️ IT WAS A TWO-WAY SWITCH AND IS NOW A SELECTOR, because "what is this
+/// object made of" turned out to have more than two answers and none of them is
+/// a tuning dial. Each is a different claim about what the mark IS, and all
+/// three stay reachable rather than being replaced in turn.
+///
+/// ⚠️ THE STONE CUBE IS NOT BEING ABANDONED. It is a day of work and a whole
+/// design, and is likely to be lifted into its own project later. Living behind
+/// `?mat=1` means it can be walked back into at any moment; living only in git
+/// would mean rebuilding to see it, which in practice means never.
+/// Still defaulting to the stone while the glass is being built — the default
+/// moves with the commit that makes 2 a real material, not before it.
+final double kMaterial = qDouble('mat', 1).clamp(0.0, 2.0);
+
+/// Which model lights the ancient cube's carving. `?carving=`.
+///
+///   0  an EMISSIVE surface — the channel's floor gives off light, tinted by
+///      the moss it passes through on the way out
+///   1  GLASS filled with the sheet's own fog, seen through a real Fresnel
+///
+/// Both are complete designs and the second replaced the first. It is kept
+/// because a knob compares two things on one screen in one moment, and a commit
+/// hash compares two memories.
+final double kCarvingModel = qDouble('carving', 1).clamp(0.0, 1.0);
 
 /// The cube's tuning knobs, live on the deployed build.
 ///
@@ -438,7 +459,8 @@ class _CubeCache {
   /// below is the part that can actually vary.
   static final String _knobs = [
     kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
-    kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kGlass, kOff,
+    kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kCarvingModel,
+    kGlass, kOff,
     // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
     // before the first frame so this should always be true — but "should
     // always" is the kind of assumption a cache key exists to not rely on. If
@@ -684,7 +706,8 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(27, kCarve)
         ..setFloat(28, kGlyphSize)
         ..setFloat(29, kEmit)
-        ..setFloat(30, kInlay);
+        ..setFloat(30, kInlay)
+        ..setFloat(31, kCarvingModel);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass
