@@ -904,6 +904,32 @@ const float kCarvePathMax = 0.25;
 const float kFogGain = 15.0;
 const float kEdgeGain = 1.30;
 
+/// Turns a chord through the glass CUBE into how much fog is seen along it.
+///
+/// ⚠️ AND IT IS TWO ORDERS OFF THE CARVING'S, WHICH IS NOT A TUNING ACCIDENT.
+/// A channel is a millimetre of glass; the body diagonal of the cube is over
+/// three units of it, and the fog accumulates along every one of them. Carrying
+/// the channel's number over made the cube a solid block of white — the same
+/// class of mistake as reusing a threshold between two fields with different
+/// statistics, which this project has now paid for three times.
+const float kInnerGain = 0.30;
+
+/// How much the glass swallows per world unit travelled, per channel.
+///
+/// ⚠️ BEER-LAMBERT, AND WITHOUT IT A THICK SOLID CANNOT READ AS THICK. A sheet
+/// can ignore absorption because there is nothing to absorb over; a cube cannot.
+/// Light crossing three units of glass arrives weaker than light clipping a
+/// corner, so the body goes deep and the edges stay clear — which is exactly how
+/// the eye measures how solid something is. Leave it out and the object is a
+/// uniformly pale box, because every ray delivers whatever was behind it at full
+/// strength no matter how far it came.
+///
+/// ⚠️ AND IT IS COLOURED, because real glass is. Iron in the melt swallows red
+/// first, which is why a thick pane looked at edge-on is green. Here it is tuned
+/// toward the energy's own blue instead: the same physics, pointed at the scene
+/// this object belongs to rather than at a window.
+const vec3 kGlassAbsorb = vec3(1.25, 0.80, 0.48);
+
 /// fbm3 that gives up as soon as the result PROVABLY cannot reach [needed].
 ///
 /// The octave amplitudes are known — 0.5, 0.25, 0.125, 0.0625, 0.03125,
@@ -2712,6 +2738,107 @@ vec3 shadeCubeCoarse(vec3 p, vec3 n) {
 /// and writes 1.0 to [hit].
 vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit, out vec3 emit);
 
+/// The outward normal at a point ON the box, from where that point sits in the
+/// cube's own frame. Needed for the EXIT face, which the intersection routine
+/// does not report — it answers about the near hit, and light leaving a solid
+/// cares about the far one.
+vec3 boxNormalAt(vec3 local) {
+  vec3 a = abs(local) / max(uCubeHalf, 1e-5);
+  if (a.x >= a.y && a.x >= a.z) return spinOutOf() * vec3(sign(local.x), 0, 0);
+  if (a.y >= a.z) return spinOutOf() * vec3(0.0, sign(local.y), 0.0);
+  return spinOutOf() * vec3(0.0, 0.0, sign(local.z));
+}
+
+/// The longest chord through the cube, for packing it into eight bits: the body
+/// diagonal, which no straight line inside a box can beat.
+float cubeChordMax() { return uCubeHalf * 3.4641016; }
+
+/// How far a point inside the cube is from the nearest EDGE, in world units.
+///
+/// Not from a face — from an edge, where two faces meet. That is the quantity a
+/// cut edge glows by, and it is the second-smallest of the three distances to
+/// the faces: the smallest alone would light up every face as you looked along
+/// it, which is a fog, not an edge.
+float cubeEdgeDistance(vec3 local) {
+  vec3 d3 = cubeHalf() - abs(local);
+  float lo = min(d3.x, min(d3.y, d3.z));
+  float hi = max(d3.x, max(d3.y, d3.z));
+  return d3.x + d3.y + d3.z - lo - hi;
+}
+
+/// The STATIC half of the cube as a solid of glass: what it reflects, and where
+/// its cut edges burn. What is inside it, and what can be seen through it, both
+/// move — those are computed live in the scene pass from the descriptor written
+/// into [emit].
+///
+/// ⚠️ THE SAME MATERIAL AS THE SHEET IT STANDS ON, and that is the entire point
+/// of it rather than a resemblance. The scene gets one rule — glass is where the
+/// energy lives — and the object stops being a thing that sits in the world and
+/// becomes a thing made of the world's own substance.
+///
+/// ⚠️ AND A SOLID IS NOT A SHEET, which is where the work is. The table is thin
+/// enough that what you see through it lands almost where it would have anyway.
+/// A cube is thick: light bends going in, crosses a real distance through the
+/// medium, and bends again coming out, so the scene behind it arrives displaced
+/// and the fog inside has depth to accumulate through. Everything interesting
+/// about this material comes from that thickness.
+vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
+  vec3 rd = -v;
+  float nDotV = max(dot(n, v), 1e-4);
+
+  // Schlick: about 4% looking straight into a face, rising to everything at a
+  // glancing one. This is what makes the cube read as MADE of something —
+  // head-on you see into it, edge-on it turns to a mirror, and the transition
+  // happens across every face at once.
+  float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
+  float fres = f0 + (1.0 - f0) * pow(1.0 - nDotV, 5.0);
+
+  // ── What it reflects ────────────────────────────────────────────────────
+  //
+  // ⚠️ THE ENVIRONMENT, NOT THE REAL SKY, and deliberately. The star field is
+  // available here, but sampling it would tie this cached picture to a sky that
+  // turns — and the reflection arrives multiplied by four to ten percent, under
+  // a bright interior. The environment carries the one thing that actually
+  // matters: that different faces reflect different parts of the world, which is
+  // what tells them apart.
+  vec3 refl = envColor(reflect(rd, n));
+
+  // A real dielectric also gives a hard specular from the lamp. On a mirror-
+  // smooth solid it is a small bright chip on whichever face is angled right,
+  // and it is most of what says "polished" rather than "translucent".
+  vec3 l = normalize(kLightPos - p);
+  vec3 h = normalize(l + v);
+  float nDotH = max(dot(n, h), 0.0);
+  float nDotL = max(dot(n, l), 0.0);
+  const float kPolish = 0.045;
+  float spec = DistributionGGX(n, h, kPolish) *
+               VisibilitySmith(nDotV, nDotL, kPolish) * nDotL;
+
+  // ── The chord, and the cut edges ────────────────────────────────────────
+  vec3 local = spinInto() * (p - cubeOrigin());
+  float edgeD = cubeEdgeDistance(local);
+  // A hairline, and never finer than a pixel — the same rule the masonry's
+  // joints follow, for the same reason: below a pixel a line stops being a line.
+  float edgeW = max(0.012 * uCubeHalf, lod * 0.9);
+  float edge = exp(-edgeD / edgeW);
+
+  // Bent on the way in, and the distance it then has to cross. Light entering a
+  // corner travels almost nothing; light entering the middle of a face crosses
+  // the whole body.
+  vec3 r1 = refract(rd, n, 1.0 / kIor);
+  vec3 nExit;
+  vec2 tin = cubeIntersect(p + r1 * 1e-4, r1, 0.0, nExit);
+  float chord = max(tin.y, 0.0);
+
+  emit = vec3(
+    clamp(chord / cubeChordMax(), 0.0, 1.0),
+    1.0 - fres,
+    edge
+  );
+
+  return refl * fres + vec3(spec) * 3.4 * fres;
+}
+
 /// ⚠️ EMISSION COMES BACK SEPARATELY RATHER THAN ADDED IN, and that separation
 /// is the entire reason the carving can breathe without costing the frame rate.
 ///
@@ -2727,6 +2854,12 @@ vec3 shadeCubeRay(vec3 rd, float spin, float lod, out float hit, out vec3 emit);
 /// against it. See uLayer 7 and cubeEnergyFlow.
 vec3 shadeCube(vec3 p, vec3 n, vec3 v, float visibility, float spin, float lod,
                out vec3 emit) {
+  // A solid of glass is not a surface with a material on it — it has no albedo
+  // to light and no growth to occlude, and everything it shows comes from what
+  // is inside or behind it. So it takes its own path rather than a branch
+  // threaded through the stone's.
+  if (uMaterial > 1.5) return shadeGlassCube(p, n, v, lod, emit);
+
   // ⚠️ THE GEOMETRIC NORMAL, NOT THE BUMPED ONE, wherever the question is about
   // the SHAPE rather than the surface — how edge-on this face is to the camera.
   // Feeding those terms the bumpy normal turns detail finer than a pixel into
@@ -3467,7 +3600,72 @@ void main() {
     // same substance, read in a different place. That is the answer to why the
     // first attempt could never be tuned into this one.
     vec3 emitted = vec3(0.0);
-    if (tCube.x > 0.0 && uCarving < 0.5) {
+    if (uMaterial > 1.5 && tCube.x > 0.0) {
+      // ── The inside of the glass cube, and what is behind it ──────────────
+      //
+      // ⚠️ EVERYTHING HERE MOVES, WHICH IS WHY IT IS HERE. The cube's picture is
+      // drawn once and kept, and that stays true — but a transparent solid
+      // cannot cache what is INSIDE it or BEHIND it, because the fog churns and
+      // the sheet's own energy churns under it. So the cached pass holds what is
+      // fixed (what it reflects, where its edges are, how far light travels
+      // through it) and this holds what is not.
+      float chord = emitSum.r * cubeChordMax();
+      float trans = emitSum.g;
+      vec3 pIn = kEye + rd * tCube.x;
+      vec3 r1 = refract(rd, nCube, 1.0 / kIor);
+
+      // ⚠️ THE FOG IS INTEGRATED ALONG THE CHORD, not sampled at the surface,
+      // and that is the difference between a solid full of something and a
+      // solid with something painted on it. A ray crossing a corner passes
+      // through almost no medium; one crossing the middle passes through the
+      // whole body, and comes out carrying that much more. Nothing chooses that
+      // falloff — it is the shape.
+      vec3 inner = vec3(0.0);
+      if (!isOff(128.0) && chord > 1e-4) {
+        const int kSteps = 6;
+        float dt = chord / float(kSteps);
+        float acc = 0.0;
+        for (int i = 0; i < kSteps; i++) {
+          vec3 sp = pIn + r1 * (dt * (float(i) + 0.5));
+          acc += smoothstep(kFogLow, kFogHigh, carveFogField(sp));
+        }
+        inner = kEnergyTint * (acc / float(kSteps)) * chord * kInnerGain * uEmit;
+      }
+
+      // ⚠️ AND WHAT IS SEEN THROUGH IT IS TRACED, NOT FAKED. Light leaves the
+      // far side bent a second time, so the sheet and the stars behind arrive
+      // displaced — the single most convincing thing a thick transparent solid
+      // does, and the one thing a surface trick can never imitate.
+      vec3 through = vec3(0.0);
+      if (!isOff(8.0)) {
+        vec3 nx;
+        vec2 tx = cubeIntersect(pIn + r1 * 1e-4, r1, 0.0, nx);
+        vec3 pOut = pIn + r1 * max(tx.y, 0.0);
+        vec3 nOut = boxNormalAt(spinInto() * (pOut - cubeOrigin()));
+        vec3 r2 = refract(r1, -nOut, kIor);
+        // A zero direction is TOTAL INTERNAL REFLECTION: past the critical angle
+        // nothing gets out at all, and the face becomes a perfect mirror from
+        // the inside. Common in a solid this thick, and leaving it out is what
+        // makes cheap glass look like tinted plastic.
+        through = (dot(r2, r2) < 1e-6)
+            ? envColor(reflect(r1, -nOut))
+            : traceBackdrop(pOut + r2 * 1e-3, r2, spin, fragCoord, uvScreen,
+                            aspect, rotation);
+      }
+
+      // ⚠️ ABSORBED OVER THE DISTANCE IT TRAVELLED. This is what gives the solid
+      // its body: a ray clipping a corner arrives almost intact, one crossing
+      // the middle arrives much weaker, so the cube darkens toward its centre
+      // and stays clear at its edges. The fog is absorbed by only half as much,
+      // because on average it was made half way along the path rather than
+      // having crossed all of it.
+      vec3 absorbFull = exp(-kGlassAbsorb * chord);
+      vec3 absorbHalf = exp(-kGlassAbsorb * chord * 0.5);
+
+      float rim = isOff(256.0) ? 0.0 : emitSum.b * kEdgeGain;
+      emitted = inner * absorbHalf + through * trans * absorbFull +
+                kEnergyTint * rim * uEmit;
+    } else if (tCube.x > 0.0 && uCarving < 0.5) {
       // The earlier model: a cached emissive colour, breathing with the field.
       vec3 e = decodeEnergy(emitSum);
       float f = carveFogField(kEye + rd * tCube.x);
