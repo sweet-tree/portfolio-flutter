@@ -279,6 +279,17 @@ uniform sampler2D uCubeEmit;
 /// was never fixed — it was covered.
 uniform sampler2D uCubeNormal;
 
+/// The fog inside the cube, rendered small and read back scaled up.
+///
+/// ⚠️ IT QUALIFIES FOR THE SAME TREATMENT AS THE GALAXY BAND AND THE SHEET'S
+/// ENERGY, and on the same grounds: it has NO EDGES OF ITS OWN. Every edge in
+/// that part of the picture belongs to the cube's silhouette, and that is
+/// resolved separately at full resolution by the coverage — so a sixteenth of
+/// the pixels has nothing to give it away. It was by far the most expensive live
+/// thing on the object, at roughly 480 hashed noise evaluations per pixel per
+/// frame, and it never needed to be.
+uniform sampler2D uInnerMap;
+
 out vec4 fragColor;
 
 /// ⚠️ STORED THROUGH A SQUARE ROOT, and read back through a square.
@@ -1013,6 +1024,17 @@ const float kWallRise = 0.85;
 
 /// Turns the sheet's own energy, read beneath the cube, into light in the cube.
 const float kWallGain = 0.85;
+
+/// How hard the interior's samples crowd toward the front of the body.
+///
+/// ⚠️ EVENLY SPACED SAMPLES SPEND MOST OF THEIR EFFORT WHERE IT CANNOT BE SEEN.
+/// Absorption dims everything behind everything else, so a sample deep inside
+/// arrives worth a fraction of one near the surface — and an even walk gives
+/// them equal say. Crowding them forward puts the samples where the answer
+/// actually comes from, so six placed well beat ten placed evenly. 1 would be
+/// the even walk; this is a mild bias, and the segment widths follow the same
+/// curve so the integral stays honest rather than becoming a weighted guess.
+const float kFogBias = 1.6;
 
 /// How much the glass swallows per world unit travelled, per channel.
 ///
@@ -3731,6 +3753,45 @@ void main() {
   //
   // Placed here, before the 64-sample antialiasing, because this pass wants
   // neither the material nor the supersampling — only the geometry above it.
+  // ⚠️ THE FOG INSIDE THE CUBE, ON A SIXTEENTH OF THE PIXELS. It has no edges of
+  // its own — every edge in that part of the frame belongs to the silhouette,
+  // which is resolved separately at full resolution — so this is the same trade
+  // the galaxy band and the sheet's energy already take, and it was the single
+  // most expensive live thing on the object.
+  //
+  // ⚠️ THE SUSPENDED LETTERS ARE DELIBERATELY NOT HERE. They are the one SHARP
+  // thing in the body, and drawing them at a quarter of each side would blur
+  // exactly the feature that has to be read. They stay at full resolution in the
+  // scene pass, where they cost one field evaluation rather than ten.
+  if (uLayer > 9.5) {
+    if (tCube.x <= 0.0 || isOff(128.0) || uMaterial < 1.5) {
+      fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+      return;
+    }
+    vec3 pIn = kEye + rd * tCube.x;
+    vec3 r1 = refract(rd, nCube, 1.0 / uIor);
+    if (dot(r1, r1) < 1e-6) r1 = rd;
+    vec3 nx;
+    vec2 tin = cubeIntersect(pIn + r1 * 1e-4, r1, 0.0, nx);
+    float chord = max(tin.y, 0.0);
+
+    vec3 acc = vec3(0.0);
+    const int kSteps = 6;
+    for (int i = 0; i < kSteps; i++) {
+      // Crowded toward the entry face, with the segment widths following the
+      // same curve so the sum stays an honest integral rather than a weighting.
+      float a = pow(float(i) / float(kSteps), kFogBias);
+      float b = pow(float(i + 1) / float(kSteps), kFogBias);
+      float s = chord * (a + b) * 0.5;
+      float ds = chord * (b - a);
+      float d = smoothstep(kFogLow, kFogHigh, carveFogField(pIn + r1 * s));
+      acc += d * exp(-kGlassAbsorb * s) * ds;
+    }
+    fragColor =
+        vec4(encodeEnergy(kEnergyTint * acc * kInnerGain * uEmit), 1.0);
+    return;
+  }
+
   if (uLayer > 8.5) {
     if (tCube.x <= 0.0) { fragColor = vec4(0.0); return; }
     vec3 nl = spinInto() * nCube;
@@ -4164,34 +4225,27 @@ void main() {
       // falloff — it is the shape.
       vec3 inner = vec3(0.0);
       if (!isOff(128.0) && chord > 1e-4) {
-        // ⚠️ FRONT TO BACK, WITH ABSORPTION APPLIED AS IT GOES — not a mean of
-        // the samples, which is what this was and is why the interior read as
-        // flat haze. Averaging a turbulent field is a low-pass filter: it throws
-        // away exactly the structure that makes the sheet's energy look like
-        // cloud, and hands back its mean, which is fog with nothing in it.
+        // ⚠️ READ, NOT WALKED — see uLayer 10. The body's fog is smooth over the
+        // whole object with no edge of its own anywhere in it, so it is rendered
+        // on a sixteenth of the pixels and read back. It was the most expensive
+        // live thing on this cube by a wide margin: ten steps, each two copies
+        // of a three-octave field, roughly 480 hashed lookups per pixel every
+        // frame. Now one texture read.
         //
-        // Integrating properly keeps it, and gives the one cue a mean cannot:
-        // near fog hides far fog. What is at the front of the solid arrives
-        // whole, what is deep inside arrives dimmed by everything in front of
-        // it — so the interior gains depth ORDER rather than being a uniform
-        // slab, and the whole body starts reading as a volume you are looking
-        // into rather than a colour you are looking at.
-        const int kSteps = 10;
-        float dt = chord / float(kSteps);
-        vec3 acc = vec3(0.0);
-        for (int i = 0; i < kSteps; i++) {
-          float s = dt * (float(i) + 0.5);
-          vec3 sp = pIn + r1 * s;
-          float d = smoothstep(kFogLow, kFogHigh, carveFogField(sp));
-          acc += d * exp(-kGlassAbsorb * s) * dt;
-        }
-        vec3 ambient = acc * kInnerGain;
+        // Integrated FRONT TO BACK over there rather than averaged, which is
+        // what gives the interior depth order — near fog hides far fog — instead
+        // of the uniform slab a mean produces.
+        vec3 ambient = decodeEnergy(texture(uInnerMap, uvScreen).rgb);
 
-        // ⚠️ THE LETTERS ARE THE SAME FOG, DENSER — not a second substance added
-        // into the first. Their brightness is the field's own value at the plate,
-        // so they cannot drift in colour or character from the energy around
-        // them however either is tuned later, and they churn because it is the
-        // churning field being read.
+        // ⚠️ THE SUSPENDED LETTERS STAY AT FULL RESOLUTION, and that split is
+        // the point of doing this rather than shrinking the whole term. They are
+        // the one SHARP thing inside the body, and a quarter of each side would
+        // blur exactly the feature that has to be read. They also cost one field
+        // evaluation rather than ten, so keeping them here is nearly free.
+        //
+        // The letters are the same fog, denser — not a second substance. Their
+        // brightness is the field's own value at the plate, so they cannot drift
+        // in colour or character from the energy around them.
         vec3 lIn = spinInto() * (pIn - cubeOrigin());
         float plate = letterChord(lIn, spinInto() * r1, chord);
         float lit = plate > 1e-5
@@ -4199,7 +4253,7 @@ void main() {
                          carveFogField(pIn + r1 * (chord * 0.5)))
             : 0.0;
 
-        inner = kEnergyTint * (ambient + plate * lit * kLetterGain) * uEmit;
+        inner = ambient + kEnergyTint * plate * lit * kLetterGain * uEmit;
       }
 
       // ── The platform's own energy, climbing into the solid ────────────────

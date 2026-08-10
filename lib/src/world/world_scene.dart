@@ -407,6 +407,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _normalShader;
   /// A ninth, for the symbols at device resolution — same reasoning again.
   ui.FragmentShader? _lettersShader;
+  /// A tenth, for the fog inside the cube — same reasoning again.
+  ui.FragmentShader? _innerShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -428,6 +430,7 @@ class _WorldSceneState extends State<WorldScene>
     _emitShader = Shaders.scene?.fragmentShader();
     _normalShader = Shaders.scene?.fragmentShader();
     _lettersShader = Shaders.scene?.fragmentShader();
+    _innerShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -453,6 +456,7 @@ class _WorldSceneState extends State<WorldScene>
     _emitShader?.dispose();
     _normalShader?.dispose();
     _lettersShader?.dispose();
+    _innerShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     _bandCache.dispose();
@@ -470,10 +474,12 @@ class _WorldSceneState extends State<WorldScene>
     final emitShader = _emitShader;
     final normalShader = _normalShader;
     final lettersShader = _lettersShader;
+    final innerShader = _innerShader;
     if (shader == null ||
         emitShader == null ||
         normalShader == null ||
         lettersShader == null ||
+        innerShader == null ||
         coverShader == null ||
         energyShader == null ||
         layerShader == null ||
@@ -492,6 +498,7 @@ class _WorldSceneState extends State<WorldScene>
         emitShader: emitShader,
         normalShader: normalShader,
         lettersShader: lettersShader,
+        innerShader: innerShader,
         devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
         lightCache: _lightCache,
         bandCache: _bandCache,
@@ -725,6 +732,7 @@ class _ScenePainter extends CustomPainter {
     required this.emitShader,
     required this.normalShader,
     required this.lettersShader,
+    required this.innerShader,
     required this.devicePixelRatio,
     required this.lightCache,
     required this.bandCache,
@@ -744,6 +752,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader emitShader;
   final ui.FragmentShader normalShader;
   final ui.FragmentShader lettersShader;
+  final ui.FragmentShader innerShader;
   final double devicePixelRatio;
   final double time;
   final double camera;
@@ -853,7 +862,8 @@ class _ScenePainter extends CustomPainter {
     // reads it or not — an unbound one is undefined and can take the whole
     // frame with it. The placeholder stands in wherever a real texture does not
     // exist yet, which on the first frame is all of them.
-    void bind(ui.FragmentShader s, {ui.Image? band, ui.Image? energy}) {
+    void bind(ui.FragmentShader s,
+        {ui.Image? band, ui.Image? energy, ui.Image? inner}) {
       final blank = cache.placeholder;
       s
         ..setImageSampler(0, cache.image ?? blank,
@@ -884,7 +894,10 @@ class _ScenePainter extends CustomPainter {
         // Smooth, like the rest of the cube's caches: this is a direction that
         // varies across the pixel, and the whole point of it is the blend.
         ..setImageSampler(7, cache.normal ?? blank,
-            filterQuality: FilterQuality.low);
+            filterQuality: FilterQuality.low)
+        // Smooth: it is a cloud with no edge of its own, which is the entire
+        // reason it is allowed to be small.
+        ..setImageSampler(8, inner ?? blank, filterQuality: FilterQuality.low);
     }
 
     /// Renders one of the small per-frame passes.
@@ -945,6 +958,16 @@ class _ScenePainter extends CustomPainter {
     }
     final bandImage = bandCache.image!;
     final energyImage = renderSmall(energyShader, 5, bandLow);
+
+    // ── The fog inside the cube, on the same fraction of the pixels ──────────
+    //
+    // ⚠️ IT EARNS THE SAME TREATMENT FOR THE SAME REASON: no edges of its own.
+    // Every edge in that part of the picture belongs to the cube's silhouette,
+    // and that is resolved separately at full resolution — so a sixteenth of
+    // the pixels has nothing to give it away. It was the most expensive live
+    // on the object: ten steps through the body, each two copies of a
+    // three-octave field, roughly 480 hashed lookups per pixel every frame.
+    final innerImage = renderSmall(innerShader, 10, bandLow);
 
     // ── The cube's shading, redrawn only when something it depends on moves ──
     //
@@ -1026,7 +1049,7 @@ class _ScenePainter extends CustomPainter {
     // nearest-neighbour sampling by default, which would put hard pixel steps
     // on the cube — the one surface in this scene that must not have them.
     configure(shader, 2); // uLayer: read everything cached from textures
-    bind(shader, band: bandImage, energy: energyImage);
+    bind(shader, band: bandImage, energy: energyImage, inner: innerImage);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
@@ -1088,6 +1111,7 @@ class _ScenePainter extends CustomPainter {
     // ⚠️ bandImage IS NOT DISPOSED HERE — the cache owns it now and will free
     // it when it replaces it, or when the widget goes away.
     energyImage.dispose();
+    innerImage.dispose();
   }
 
   @override
