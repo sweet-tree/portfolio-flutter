@@ -248,6 +248,26 @@ final double kEdgeWidth = qDouble('edge', 1).clamp(0.3, 2.0);
 /// per pixel for the fog inside. About a hundredfold, not a twofold.
 final double kWall = qDouble('wall', 1).clamp(0.0, 4.0);
 
+/// Draws the cube's RIGHT side face as a copy of its left one. `?twin=1`.
+///
+/// ⚠️ AFTER TWO FAILED ATTEMPTS TO NAME WHAT MAKES THEM DIFFER. First the angle
+/// they meet the eye at — measured at the mark's pose, 48.0° and 45.8°, the
+/// same. Then the environment's horizontal gradient, which really is 3.3 times
+/// apart between them and still changed nothing he could see. Both were me
+/// reasoning about the material instead of looking at it, and he said so.
+///
+/// So this stops asking why. The two side faces are a quarter turn apart, and
+/// reflecting the surface across the plane bisecting them lands one exactly on
+/// the other — so the right face is shaded AT the left face's place, with the
+/// camera left where it is. It then renders whatever the left face renders,
+/// because it is the left face's calculation.
+///
+/// ⚠️ THE COST, STATED RATHER THAN DISCOVERED LATER: what shows THROUGH the
+/// right face is then the view through the left one, so the world behind it
+/// arrives mirrored. On a hazy solid that may be invisible. It is his to judge,
+/// and it is why this is a knob and not a change.
+final double kTwin = qDouble('twin', 0).clamp(0.0, 1.0);
+
 /// The cube's tuning knobs, live on the deployed build.
 ///
 /// ⚠️ THEY EXIST BECAUSE THE ALTERNATIVE IS WHAT WE DID ALL DAY: change a
@@ -604,7 +624,9 @@ class _CubeCache {
   static final String _knobs = [
     kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
     kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kCarvingModel,
-    kLetters, kAbsorb, kDisp, kCubeIor, kWall, kGlass, kOff,
+    // ⚠️ kTwin BELONGS HERE — it changes the cached picture of the cube, so
+    // leaving it out would keep a cube drawn at the old setting.
+    kLetters, kAbsorb, kDisp, kCubeIor, kWall, kTwin, kGlass, kOff,
     // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
     // before the first frame so this should always be true — but "should
     // always" is the kind of assumption a cache key exists to not rely on. If
@@ -869,7 +891,8 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(34, kCarvingModel)
         ..setFloat(35, kCubeIor)
         ..setFloat(36, kEdgeWidth)
-        ..setFloat(37, kWall);
+        ..setFloat(37, kWall)
+        ..setFloat(38, kTwin);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass

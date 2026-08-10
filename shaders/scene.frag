@@ -227,6 +227,35 @@ uniform float uEdge;
 /// works.
 uniform float uWall;
 
+/// Draws the cube's RIGHT side face as a copy of its left one. `?twin=`.
+///
+/// ⚠️ NOT A CORRECTION OF ONE TERM — A SUBSTITUTION OF THE WHOLE FACE. I tried
+/// twice to explain why the two sides differ and name the single number causing
+/// it: first the angle they meet the eye at, which turned out to be 48.0° and
+/// 45.8° — the same — and then the environment's horizontal gradient, which is
+/// 3.3 times apart and still changed nothing anyone could see. Both were
+/// reasoning about the material instead of looking at it.
+///
+/// So this stops asking WHY. The two side faces are a quarter turn apart, so
+/// reflecting the surface across the plane that bisects them lands one exactly
+/// on the other. Shade the right face at that mirrored place, with the camera
+/// left where it is, and it renders whatever the left face renders — Fresnel,
+/// reflection, chord, absorption, fog, burning edge, all of it — because it IS
+/// the left face's calculation.
+///
+/// ⚠️ THE CAMERA IS DELIBERATELY NOT MIRRORED. Mirror the eye as well and the
+/// whole configuration is symmetric, so nothing changes at all — that is what a
+/// symmetry means. The surface moves; the viewer does not.
+///
+/// ⚠️ AND IT HAS TO HAPPEN IN BOTH HALVES. What the cube reflects is drawn once
+/// and cached; what shows through it is computed live. Substitute the face in
+/// one and not the other and they disagree down the edge where they meet.
+///
+/// The honest cost: what you see THROUGH the right face is then the view through
+/// the left one, so the world behind it arrives mirrored. On a hazy solid that
+/// may be invisible; on a clear one it would not be. That is his to judge.
+uniform float uTwin;
+
 uniform sampler2D uCubeLayer;
 
 /// The cast shadow and the contact darkening, baked over the table's surface.
@@ -3164,6 +3193,37 @@ vec3 boxNormalAt(vec3 local) {
   return spinOutOf() * vec3(0.0, 0.0, sign(local.z));
 }
 
+/// Moves a point on the cube's RIGHT side face onto its LEFT one — see uTwin.
+///
+/// Does nothing on the top, on the left face itself, or at `?twin=0`. The point
+/// and the normal are both moved; the view direction is not, which is the whole
+/// mechanism.
+void twinFace(inout vec3 p, inout vec3 n, vec3 v) {
+  if (uTwin < 0.5 || abs(n.y) > 0.5) return;
+
+  // Which way is right on the screen. The camera is a constant, so this folds.
+  vec3 fwd = normalize(kTarget - kEye);
+  vec3 screenRight = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
+  // The left face is the canonical one and keeps everything it has.
+  if (dot(n, screenRight) <= 0.0) return;
+
+  // The other visible upright face: this one turned a quarter turn, with the
+  // sign that faces the eye.
+  vec3 perp = vec3(-n.z, 0.0, n.x);
+  vec3 other = dot(perp, v) > 0.0 ? perp : -perp;
+
+  // Reflecting across the plane that bisects two unit vectors swaps them
+  // exactly, so this lands the right face precisely on the left one rather than
+  // approximately.
+  vec3 bisector = other - n;
+  if (dot(bisector, bisector) < 1e-6) return;
+  bisector = normalize(bisector);
+
+  vec3 centre = cubeOrigin();
+  p = centre + reflect(p - centre, bisector);
+  n = other;
+}
+
 /// The longest chord through the cube, for packing it into eight bits: the body
 /// diagonal, which no straight line inside a box can beat.
 float cubeChordMax() { return uCubeHalf * 3.4641016; }
@@ -3198,6 +3258,10 @@ float cubeEdgeDistance(vec3 local) {
 /// and the fog inside has depth to accumulate through. Everything interesting
 /// about this material comes from that thickness.
 vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
+  // The right side face renders as the left one — see uTwin. Everything below
+  // then works on the substituted surface without knowing anything happened.
+  twinFace(p, n, v);
+
   vec3 rd = -v;
   float nDotV = max(dot(n, v), 1e-4);
 
@@ -4361,6 +4425,18 @@ void main() {
           ? (uCubeHalf - dot(roL, nl)) / denom
           : max(tCube.x, 0.0);
       vec3 pIn = kEye + rd * max(tEnter, 0.0);
+
+      // ⚠️ THE SAME SUBSTITUTION THE CACHED HALF MAKES — see uTwin. It happens
+      // AFTER the entry point is solved, because the entry point has to be found
+      // on the face the ray really struck; only then is that place moved onto
+      // the other face. Doing it before would solve the crossing against a plane
+      // this pixel is not on.
+      //
+      // Everything after this — what comes through, what it reflects, how far it
+      // travelled — is then the left face's answer, which is the entire point.
+      twinFace(pIn, nAvg, -rd);
+      fres = f0 + (1.0 - f0) * pow(1.0 - max(dot(nAvg, -rd), 1e-4), 5.0);
+
       vec3 r1 = refract(rd, nAvg, 1.0 / uIor);
 
       // ⚠️ THE FOG IS INTEGRATED ALONG THE CHORD, not sampled at the surface,
