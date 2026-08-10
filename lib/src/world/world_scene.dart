@@ -409,6 +409,8 @@ class _WorldSceneState extends State<WorldScene>
   ui.FragmentShader? _lettersShader;
   /// A tenth, for the fog inside the cube — same reasoning again.
   ui.FragmentShader? _innerShader;
+  /// An eleventh, for the cloudy field the glass transmits — same reasoning.
+  ui.FragmentShader? _fieldShader;
   late final Ticker _ticker;
   double _time = 0;
   final _CubeCache _cubeCache = _CubeCache();
@@ -431,6 +433,7 @@ class _WorldSceneState extends State<WorldScene>
     _normalShader = Shaders.scene?.fragmentShader();
     _lettersShader = Shaders.scene?.fragmentShader();
     _innerShader = Shaders.scene?.fragmentShader();
+    _fieldShader = Shaders.scene?.fragmentShader();
     // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
     // point of the field, so there is no idle state — a standing cost, and the
     // reason fill rate has to be measured rather than assumed.
@@ -457,6 +460,7 @@ class _WorldSceneState extends State<WorldScene>
     _normalShader?.dispose();
     _lettersShader?.dispose();
     _innerShader?.dispose();
+    _fieldShader?.dispose();
     _cubeCache.dispose();
     _lightCache.dispose();
     _bandCache.dispose();
@@ -475,7 +479,9 @@ class _WorldSceneState extends State<WorldScene>
     final normalShader = _normalShader;
     final lettersShader = _lettersShader;
     final innerShader = _innerShader;
+    final fieldShader = _fieldShader;
     if (shader == null ||
+        fieldShader == null ||
         emitShader == null ||
         normalShader == null ||
         lettersShader == null ||
@@ -499,6 +505,7 @@ class _WorldSceneState extends State<WorldScene>
         normalShader: normalShader,
         lettersShader: lettersShader,
         innerShader: innerShader,
+        fieldShader: fieldShader,
         devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
         lightCache: _lightCache,
         bandCache: _bandCache,
@@ -733,6 +740,7 @@ class _ScenePainter extends CustomPainter {
     required this.normalShader,
     required this.lettersShader,
     required this.innerShader,
+    required this.fieldShader,
     required this.devicePixelRatio,
     required this.lightCache,
     required this.bandCache,
@@ -753,6 +761,7 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader normalShader;
   final ui.FragmentShader lettersShader;
   final ui.FragmentShader innerShader;
+  final ui.FragmentShader fieldShader;
   final double devicePixelRatio;
   final double time;
   final double camera;
@@ -863,7 +872,7 @@ class _ScenePainter extends CustomPainter {
     // frame with it. The placeholder stands in wherever a real texture does not
     // exist yet, which on the first frame is all of them.
     void bind(ui.FragmentShader s,
-        {ui.Image? band, ui.Image? energy, ui.Image? inner}) {
+        {ui.Image? band, ui.Image? energy, ui.Image? inner, ui.Image? field}) {
       final blank = cache.placeholder;
       s
         ..setImageSampler(0, cache.image ?? blank,
@@ -897,7 +906,10 @@ class _ScenePainter extends CustomPainter {
             filterQuality: FilterQuality.low)
         // Smooth: it is a cloud with no edge of its own, which is the entire
         // reason it is allowed to be small.
-        ..setImageSampler(8, inner ?? blank, filterQuality: FilterQuality.low);
+        ..setImageSampler(8, inner ?? blank, filterQuality: FilterQuality.low)
+        // Smooth, and for the same reason as the rest: it is a cloud with no
+        // edge of its own, which is the whole argument for drawing it small.
+        ..setImageSampler(9, field ?? blank, filterQuality: FilterQuality.low);
     }
 
     /// Renders one of the small per-frame passes.
@@ -968,6 +980,20 @@ class _ScenePainter extends CustomPainter {
     // on the object: ten steps through the body, each two copies of a
     // three-octave field, roughly 480 hashed lookups per pixel every frame.
     final innerImage = renderSmall(innerShader, 10, bandLow);
+
+    // ── The cloudy field the glass transmits, likewise ──────────────────────
+    //
+    // ⚠️ THE LARGEST LIVE COST THAT WAS LEFT. It is what you see THROUGH the
+    // sheet — about 96% of what the glass shows, since Fresnel only reflects a
+    // few percent looking down at it — so it covered the whole table at full
+    // resolution, five five-octave noise fields deep. Cube pixels paid for it
+    // two or three times more, because the view through the solid and the view
+    // it reflects each trace the table again.
+    //
+    // No edges of its own, so it takes the same sixteenth of the pixels the
+    // band and the energy already do. Its DITHER stays live at full resolution,
+    // for one hash — that part is per-pixel by definition.
+    final fieldImage = renderSmall(fieldShader, 11, bandLow);
 
     // ── The cube's shading, redrawn only when something it depends on moves ──
     //
@@ -1049,7 +1075,11 @@ class _ScenePainter extends CustomPainter {
     // nearest-neighbour sampling by default, which would put hard pixel steps
     // on the cube — the one surface in this scene that must not have them.
     configure(shader, 2); // uLayer: read everything cached from textures
-    bind(shader, band: bandImage, energy: energyImage, inner: innerImage);
+    bind(shader,
+        band: bandImage,
+        energy: energyImage,
+        inner: innerImage,
+        field: fieldImage);
 
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(Offset.zero & low, Paint()..shader = shader);
@@ -1112,6 +1142,7 @@ class _ScenePainter extends CustomPainter {
     // it when it replaces it, or when the widget goes away.
     energyImage.dispose();
     innerImage.dispose();
+    fieldImage.dispose();
   }
 
   @override

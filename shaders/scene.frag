@@ -290,6 +290,19 @@ uniform sampler2D uCubeNormal;
 /// frame, and it never needed to be.
 uniform sampler2D uInnerMap;
 
+/// The cloudy field the glass transmits, rendered small and read back scaled up.
+///
+/// ⚠️ THE LARGEST REMAINING LIVE COST IN THE FRAME, and it qualifies for the same
+/// treatment as the band and the energy on exactly the same grounds: no edges of
+/// its own. It is what the sheet shows THROUGH itself, so it covered the whole
+/// table at full resolution — five five-octave noise fields per pixel — and cube
+/// pixels paid for it twice more, once through the solid and once in what the
+/// solid reflects.
+///
+/// ⚠️ ITS DITHER IS NOT IN HERE. That part is per-pixel by definition and stays
+/// live; see fieldGrain.
+uniform sampler2D uFieldMap;
+
 out vec4 fragColor;
 
 /// ⚠️ STORED THROUGH A SQUARE ROOT, and read back through a square.
@@ -483,7 +496,20 @@ float fbm(vec2 p) {
   return sum;
 }
 
-vec3 fieldColor(vec2 uv, float aspect, vec2 fragCoord) {
+/// The cloudy field, WITHOUT its dither.
+///
+/// ⚠️ SPLIT OUT SO THE EXPENSIVE HALF CAN BE RENDERED SMALL. This is five
+/// five-octave noise fields — around a hundred hash lookups — and it was being
+/// evaluated per pixel on every pixel of the table, because it is what you see
+/// THROUGH the glass and the glass transmits about 96% of what is behind it. On
+/// cube pixels it was paid two or three times over, once for the view through
+/// the solid and once for what it reflects.
+///
+/// It has no edges anywhere in it, which is the test the galaxy band and the
+/// sheet's energy already passed to be drawn at a sixteenth of the pixels. The
+/// DITHER is the one part that does have per-pixel structure, so it stays live
+/// and costs one hash — see fieldColor below.
+vec3 fieldColorSmooth(vec2 uv, float aspect) {
   vec2 p = vec2((uv.x * aspect + uCamera * 1.35) * 0.55, uv.y * 2.6);
   p.x /= 1.0 + abs(uVelocity) * 2.4;
 
@@ -500,8 +526,20 @@ vec3 fieldColor(vec2 uv, float aspect, vec2 fragCoord) {
   float rim = smoothstep(0.56, 0.615, f) - smoothstep(0.615, 0.70, f);
   col += kAccent * rim * 0.09;
   col += vec3(0.062, 0.062, 0.075) * rim;
-  col += (hash(fragCoord + fract(uTime) * 91.7) - 0.5) * 0.022;
   return mix(col, kBase, smoothstep(0.42, 1.0, uv.y) * 0.72);
+}
+
+/// The dither that goes on top of it: one hash, per pixel, per frame.
+///
+/// It has to stay at full resolution — the whole point of it is that it is finer
+/// than anything else in the frame, which is what stops a very smooth gradient
+/// from banding in eight bits.
+vec3 fieldGrain(vec2 fragCoord) {
+  return vec3((hash(fragCoord + fract(uTime) * 91.7) - 0.5) * 0.022);
+}
+
+vec3 fieldColor(vec2 uv, float aspect, vec2 fragCoord) {
+  return fieldColorSmooth(uv, aspect) + fieldGrain(fragCoord);
 }
 
 /// How far a copy of the energy travels before it is retired, and how long that
@@ -664,6 +702,11 @@ float hash31(vec3 p) {
   return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
 
+/// FOUR decorrelated numbers for one point, in a single pass. Defined down in
+/// the masonry section; declared here because the star field reaches it first
+/// and GLSL will not call a function it has not seen.
+vec4 hash43(vec3 p);
+
 /// 3D value noise, for structure that lives on the sphere of directions.
 ///
 /// The band and its dust have to be sampled in 3D: any 2D parameterisation of
@@ -779,35 +822,68 @@ vec3 starLayer(vec3 dir, float density, float size, float brightness,
   vec3 p = dir * density;
   vec3 base = floor(p);
   vec3 acc = vec3(0.0);
+
+  // Hoisted out of the eight cells: neither depends on which cell this is, and
+  // both were being recomputed inside the innermost loop.
+  float threshold = 1.0 - (1.0 - 0.86) * starDensity;
+  float sigma2 = size * size;
+  // ⚠️ HOW FAR A STAR CAN POSSIBLY REACH, and it is exact rather than generous.
+  // The core is a Gaussian, so at nine sigma-squared it is exp(-9) — about one
+  // ten-thousandth. Multiplied by the brightest layer's 3.1 that is still an
+  // order of magnitude under one step of an 8-bit channel, so every instruction
+  // after this point would compute a number that cannot change a pixel.
+  float reach2 = sigma2 * 9.0;
+
   for (int i = 0; i < 2; i++) {
     for (int j = 0; j < 2; j++) {
       for (int k = 0; k < 2; k++) {
         vec3 cell = base + vec3(float(i), float(j), float(k));
-        float h = hash31(cell);
+
+        // ⚠️ ONE HASHING PASS FOR FOUR NUMBERS, NOT FOUR PASSES FOR FOUR.
+        // This cell wanted seven independent randoms — whether it holds a star,
+        // three for where inside itself, one for colour, two for the twinkle —
+        // and asked seven separate times, each with its own multiplies and
+        // fractions. The masonry paid for exactly this lesson and this is the
+        // same fix: mix once, take four decorrelated numbers out.
+        //
+        // ⚠️ IT PRODUCES DIFFERENT NUMBERS, so this is a different sky — the
+        // same kind of star field with the stars in other places. Nothing about
+        // its character changes; it was random before and is random now.
+        vec4 h4 = hash43(cell);
+
         // Most cells are empty — a sky where every cell has a star reads as
         // noise, not as stars.
         // The band raises how many cells hold a star; dust lanes lower it.
-        if (h < 1.0 - (1.0 - 0.86) * starDensity) continue;
+        if (h4.x < threshold) continue;
 
-        vec3 jitter = vec3(
-          hash31(cell + 1.7), hash31(cell + 3.3), hash31(cell + 5.9)
-        );
-        float d = length(p - (cell + jitter));
-        float core = exp(-(d * d) / (size * size));
+        vec3 rel = p - (cell + h4.yzw);
+        float d2 = dot(rel, rel);
+        // ⚠️ AND THE SECOND LESSON IS THE BIGGER ONE: holding a star is not the
+        // same as the star being HERE. A cell is a whole unit across and a star
+        // is a fraction of one, so for nearly every pixel of every occupied cell
+        // the answer is already nothing — and the colour, the magnitude and the
+        // twinkle were all computed anyway, sine included. Distance is the
+        // cheapest thing in the block and it decides the rest.
+        if (d2 > reach2) continue;
+
+        float core = exp(-d2 / sigma2);
+
+        // The second and last hash for this cell, reached only by stars that
+        // actually land on this pixel.
+        vec4 s4 = hash43(cell + 19.7);
 
         // Colour temperature: real star fields are not white. Blue-white
         // through to warm, which is most of what makes them read as stars.
-        float temp = hash31(cell + 9.1);
-        vec3 tint = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.90, 0.74), temp);
+        vec3 tint = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.90, 0.74), s4.x);
 
         // Magnitude varies a lot — a few bright ones carry the impression.
-        float mag = pow(fract(h * 37.0), 1.6) * 0.85 + 0.15;
+        float mag = pow(fract(h4.x * 37.0), 1.6) * 0.85 + 0.15;
 
         // TWINKLE. Each star gets its own rate and phase, so the field
         // scintillates instead of pulsing as one. Rates are deliberately
         // uneven — a field that breathes in unison reads as an effect.
-        float rate = 0.5 + 2.4 * hash31(cell + 13.7);
-        float phase = hash31(cell + 21.3) * 6.2831853;
+        float rate = 0.5 + 2.4 * s4.y;
+        float phase = s4.z * 6.2831853;
         mag *= 0.55 + 0.45 * sin(uTime * rate + phase);
         acc += tint * core * mag * brightness;
       }
@@ -1475,7 +1551,41 @@ float tableTrace(vec3 ro, vec3 rd) {
 
   if (best > 0.0) return best;
 
-  float t = 0.02;
+  // ⚠️ AN EXACT REJECTION BEFORE THE MARCH, AND IT IS THE WHOLE SKY.
+  //
+  // Everything past this point walks the distance field up to 96 times. The two
+  // analytic faces above catch the table's flat middle, so what falls through
+  // here is the edges — and every ray that misses the table ALTOGETHER. That
+  // second group is most of the upper half of the frame: a ray heading below the
+  // horizon but passing beyond the far cut edge crosses y = 0 somewhere out in
+  // empty space, fails the flat tests because it is outside the sheet, and then
+  // marches until it gives up sixty units away. Hundreds of instructions to
+  // rediscover "there is nothing there".
+  //
+  // The table is contained in a box, so a ray that misses the box cannot hit the
+  // table. That is a slab test — six divides and four compares — and it is not
+  // an approximation of the march's answer, it IS the answer.
+  //
+  // Grown by the fillet, because the smooth union pulls the surface slightly
+  // OUTSIDE the two boxes it joins: smin is never larger than either input, so
+  // the zero crossing sits a little beyond them. Rejecting on the tight bound
+  // would shave the rounded lip.
+  vec3 bMin = vec3(-kTableHalfX, -kDropDepth, kEdgeZ - kSlab) - kFillet;
+  vec3 bMax = vec3(kTableHalfX, 0.0, kBackZ) + kFillet;
+  vec3 invD = 1.0 / rd;
+  vec3 tA = (bMin - ro) * invD;
+  vec3 tB = (bMax - ro) * invD;
+  vec3 tLo = min(tA, tB);
+  vec3 tHi = max(tA, tB);
+  float tEnter = max(max(tLo.x, tLo.y), tLo.z);
+  float tLeave = min(min(tHi.x, tHi.y), tHi.z);
+  if (tLeave < 0.0 || tEnter > tLeave) return -1.0;
+
+  // ⚠️ AND START WHERE THE BOX STARTS. A ray that clips a far corner of the
+  // table used to spend its first steps crossing empty space to reach it. The
+  // field is a true distance so those steps were large and few — but they are
+  // still steps, and the entry point is already solved above.
+  float t = max(tEnter, 0.02);
   for (int i = 0; i < 96; i++) {
     vec3 p = ro + rd * t;
     float d = tableSdf(p);
@@ -3514,9 +3624,17 @@ vec3 traceBackdrop(vec3 ro, vec3 rd, float spin, vec2 fragCoord,
     // used to resample the field.
     vec3 rt = refract(rd, n, 1.0 / kIor);
     vec2 deviation = (rt.xz - rd.xz) * 0.16;
+    // ⚠️ READ, NOT COMPUTED — see uLayer 11. Smooth everywhere, so a sixteenth
+    // of the pixels has nothing to give it away; the dither that DOES have
+    // per-pixel structure is added here at full resolution for one hash.
+    //
+    // The refraction still displaces it honestly: `deviation` is in screen
+    // coordinates, and at this scene's size it is a couple of texels of the
+    // small map, so the shift survives being sampled from it.
     vec3 transmitted = isOff(8.0)
         ? background
-        : fieldColor(uvScreen + deviation, aspect, fragCoord);
+        : decodeLayer(texture(uFieldMap, uvScreen + deviation).rgb) +
+              fieldGrain(fragCoord);
 
     // Second surface. A glass sheet has two interfaces, and the dimmer,
     // offset ghost off the back one is the specific tell of glass rather
@@ -3659,6 +3777,14 @@ void main() {
   vec2 uvScreen = fragCoord / uSize;
   float aspect = uSize.x / uSize.y;
 
+  // ⚠️ THE FIELD PASS, AND IT RETURNS BEFORE ANY GEOMETRY IS TOUCHED. It needs
+  // the screen position and nothing else — no camera basis, no ray, no cube — so
+  // building those first would be work thrown away on every pixel of it.
+  if (uLayer > 10.5) {
+    fragColor = vec4(encodeLayer(fieldColorSmooth(uvScreen, aspect)), 1.0);
+    return;
+  }
+
   // Camera. A real one: eye, target, and an image plane — so the ground plane
   // is genuinely horizontal and the three-quarter view comes from where the
   // camera stands rather than from rotating the world.
@@ -3780,7 +3906,10 @@ void main() {
   // thing in the body, and drawing them at a quarter of each side would blur
   // exactly the feature that has to be read. They stay at full resolution in the
   // scene pass, where they cost one field evaluation rather than ten.
-  if (uLayer > 9.5) {
+  // ⚠️ A RANGE, NOT A THRESHOLD — and this file has already been bitten by
+  // exactly this once. Written as a bare "above 9.5" it also catches layer 11,
+  // so the field pass would have been handed the interior fog's output.
+  if (uLayer > 9.5 && uLayer < 10.5) {
     if (tCube.x <= 0.0 || isOff(128.0) || uMaterial < 1.5) {
       fragColor = vec4(0.0, 0.0, 0.0, 1.0);
       return;
