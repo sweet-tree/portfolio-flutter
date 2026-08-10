@@ -1020,7 +1020,24 @@ const float kInnerGain = 0.30;
 /// Loose, and the cube is lit through its whole body — a story about the two
 /// being one piece of glass. Both are defensible and they say different things,
 /// which is why `?wall=` exists rather than a number I picked.
-const float kWallRise = 0.85;
+const float kWallRise = 2.4;
+
+/// How much of a climb up the wall counts as distance travelled from the
+/// contact.
+///
+/// ⚠️ THIS IS WHAT MAKES THE ENERGY ACTUALLY RISE, and it is a trick this file
+/// already uses. `surfaceCoord` unrolls the sheet's front DROP PANEL into the
+/// flat coordinate by counting how far you have fallen as extra distance
+/// travelled — which is why the flow pours over the lip continuously instead of
+/// stopping at it. The cube's wall is the same problem upside down: count how
+/// far you have CLIMBED as extra distance from the contact, and the outward
+/// advection that already exists carries the pattern up the wall for nothing.
+///
+/// Before this, the wall simply wore a copy of the floor beneath it. The only
+/// motion in it was the floor's own, which is sideways — so the pattern drifted
+/// across the wall rather than climbing it. It read as a reflection standing up,
+/// not as energy travelling, which is exactly what he said.
+const float kWallUnroll = 1.35;
 
 /// Turns the sheet's own energy, read beneath the cube, into light in the cube.
 const float kWallGain = 0.85;
@@ -4275,8 +4292,25 @@ void main() {
         // Sampled at the middle of the body, so it reads as light IN the glass
         // rather than a film on the face nearest the camera.
         vec3 mid = pIn + rd * (chord * 0.5);
-        // Straight down onto the sheet: the footprint this point stands over.
-        vec3 foot = vec3(mid.x, 0.0, mid.z);
+
+        // ⚠️ THE WALL IS THE SHEET, CONTINUED — not a copy of the floor stood
+        // up. The source is the CONTACT, where the two pieces of glass touch,
+        // and from there the energy goes two ways: outward across the platform
+        // and upward through the object. So a point on the wall is a point on
+        // the sheet that has travelled further — its own distance out from the
+        // cube, plus how far it has climbed.
+        //
+        // Reading it that way means the advection already in the field carries
+        // the pattern UP the wall, because up the wall IS outward in this
+        // coordinate. Nothing new moves it; the existing flow does.
+        vec2 cxz = cubeOnSurface();
+        vec2 away = vec2(mid.x, mid.z) - cxz;
+        float outward = length(away);
+        vec2 dirOut = outward > 1e-4 ? away / outward : vec2(1.0, 0.0);
+        vec2 unrolled =
+            cxz + dirOut * (outward + max(mid.y, 0.0) * kWallUnroll);
+
+        vec3 foot = vec3(unrolled.x, 0.0, unrolled.y);
         vec3 rel = foot - kEye;
         float z = dot(rel, fwd);
         if (z > 1e-3) {
