@@ -153,6 +153,10 @@ uniform float uEmit;
 /// below that it sits lower and the stone lips over it. `?inlay=`.
 uniform float uInlay;
 
+/// Where the symbols live on the glass cube: 0 nowhere, 1 suspended INSIDE the
+/// solid, 2 frosted flat onto its faces. `?letters=`.
+uniform float uLetters;
+
 /// Which model lights the carving: 1 glass filled with fog, 0 the earlier
 /// EMISSIVE surface. `?carving=`.
 ///
@@ -1867,6 +1871,94 @@ const float kGlyphCells = 2.0;
 ///
 /// `Di` faces along x, `Se` along z: two symbols, four faces, and whichever pair
 /// the camera sees shows one of each rather than the same one twice.
+/// The raw distance to a symbol's edge, in the atlas cell's own units.
+///
+/// Split out from the face-mapped version below because the cube's interior
+/// needs the same letters read a different way: not projected onto a face, but
+/// suspended in the body as a shape with a plane of its own.
+float glyphAt(vec2 g, float cell) {
+  if (abs(g.x) > 1.0 || abs(g.y) > 1.0) return 1e3;
+  vec2 t = vec2(
+    (cell + (g.x * 0.5 + 0.5)) / kGlyphCells,
+    0.5 - g.y * 0.5
+  );
+  float d = texture(uCarveMap, t).r;
+  return (d - 0.5) * 2.0 * kGlyphSpread / (kGlyphCell * 0.5);
+}
+
+/// How thick the letters are, as a fraction of the cube's half-width, and how
+/// much denser than the surrounding fog they run.
+const float kLetterThick = 0.10;
+const float kLetterGain = 5.0;
+
+/// How much of the letters is at this point INSIDE the solid.
+///
+/// ⚠️ THE LETTERS ARE NOT A FEATURE ON THE OBJECT — THEY ARE THE FOG, GATHERED.
+/// Every previous attempt made them a separate thing that then had to be
+/// reconciled with the energy: a groove that emitted, a channel that was filled.
+/// Here there is nothing to reconcile. They are a region of the same field, at a
+/// higher density, suspended in the body — so they cannot be the wrong colour,
+/// cannot be the wrong material, and breathe with the flow because they ARE the
+/// flow. Laser-etched crystal is exactly this and it is the reference.
+///
+/// Two plates crossing at the middle of the cube, one carrying each symbol, each
+/// perpendicular to the axis it reads along. That they intersect is not a
+/// problem to solve: the energy is denser where both cross, which is the centre
+/// of the object, which is where it should be densest anyway.
+///
+/// ⚠️ AND A PLATE SEEN FROM BEHIND READS MIRRORED, deliberately left alone. That
+/// is what a real inclusion in a solid does, and correcting it would mean the
+/// letters were painted on two faces rather than existing once in the middle.
+///
+/// ⚠️ THE PLATES ARE INTERSECTED, NOT MARCHED THROUGH, and the first version got
+/// this wrong in a way worth keeping written down. Sampling them along the same
+/// six steps that carry the fog missed them almost every time: a plate a tenth
+/// of a unit thick, sampled every third of a unit, is hit by accident or not at
+/// all — the letters came out as broken vertical stripes. Volume marching is for
+/// things thicker than the step; a thin sheet has to be solved.
+///
+/// A straight line crosses a plane exactly once, so each plate costs one
+/// division and one lookup, and the answer is exact at any thickness. The path
+/// length through it is the thickness over the cosine — light crossing the plate
+/// at a slant travels further inside it and comes out brighter, which is real
+/// and is free here.
+///
+/// Returns how much glowing plate the ray passed through, in world units.
+float letterChord(vec3 lIn, vec3 lDir, float chord) {
+  if (uLetters < 0.5 || uLetters > 1.5) return 0.0;
+  // ⚠️ NOT `half` — RESERVED WORD IN GLSL, and the error points at the end of
+  // the file rather than the line. Third time on this project, after `patch` and
+  // once already in the carving. Name a local after a size, give it a suffix.
+  float halfW = max(uCubeHalf, 1e-4);
+  float thick = kLetterThick * halfW;
+  float span = halfW * max(uGlyph, 1e-3);
+  const float kSoft = 0.05;
+  float total = 0.0;
+
+  // `Di`, lying in the plane x = 0 and read along x.
+  if (abs(lDir.x) > 1e-4) {
+    float tt = -lIn.x / lDir.x;
+    if (tt > 0.0 && tt < chord) {
+      vec3 q = lIn + lDir * tt;
+      float d = glyphAt(vec2(q.z, q.y) / span, 0.0);
+      total += (1.0 - smoothstep(-kSoft, kSoft, d)) *
+               (thick / max(abs(lDir.x), 0.08));
+    }
+  }
+
+  // `Se`, in the plane z = 0 and read along z.
+  if (abs(lDir.z) > 1e-4) {
+    float tt = -lIn.z / lDir.z;
+    if (tt > 0.0 && tt < chord) {
+      vec3 q = lIn + lDir * tt;
+      float d = glyphAt(vec2(q.x, q.y) / span, 1.0);
+      total += (1.0 - smoothstep(-kSoft, kSoft, d)) *
+               (thick / max(abs(lDir.z), 0.08));
+    }
+  }
+  return total;
+}
+
 float glyphDist(vec2 uv, vec3 nl) {
   // ⚠️ DERIVED FROM THE CAMERA'S OWN BASIS, NOT GUESSED — and guessing it got
   // one axis backwards, which showed as `Se` carved in mirror writing while `Di`
@@ -2830,13 +2922,34 @@ vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
   vec2 tin = cubeIntersect(p + r1 * 1e-4, r1, 0.0, nExit);
   float chord = max(tin.y, 0.0);
 
+  // ── The other option: the symbols FROSTED onto the faces ────────────────
+  //
+  // `?letters=2`. Etched glass is glass whose surface has been broken into
+  // countless tiny facets, so it stops transmitting cleanly and starts
+  // SCATTERING: it goes pale and bright where light reaches it, and you can no
+  // longer see through it. Both halves matter — a frost that brightens without
+  // also blocking the view reads as paint on a window.
+  //
+  // Kept as an alternative rather than a fallback. It is a different object from
+  // the suspended version: marks made ON the surface of a thing, against
+  // something existing inside it.
+  float trans = 1.0 - fres;
+  vec3 frost = vec3(0.0);
+  if (uLetters > 1.5) {
+    vec3 nl = spinInto() * n;
+    float aa = max(lod / max(uCubeHalf, 1e-4), 1e-5);
+    float etch = clamp(-glyphDist(carveFaceUv(local, nl), nl) / aa, 0.0, 1.0);
+    frost = etch * (envColor(n) * 0.55 + vec3(nDotL) * 0.30);
+    trans *= 1.0 - etch * 0.88;
+  }
+
   emit = vec3(
     clamp(chord / cubeChordMax(), 0.0, 1.0),
-    1.0 - fres,
+    trans,
     edge
   );
 
-  return refl * fres + vec3(spec) * 3.4 * fres;
+  return refl * fres + vec3(spec) * 3.4 * fres + frost;
 }
 
 /// ⚠️ EMISSION COMES BACK SEPARATELY RATHER THAN ADDED IN, and that separation
@@ -3629,7 +3742,21 @@ void main() {
           vec3 sp = pIn + r1 * (dt * (float(i) + 0.5));
           acc += smoothstep(kFogLow, kFogHigh, carveFogField(sp));
         }
-        inner = kEnergyTint * (acc / float(kSteps)) * chord * kInnerGain * uEmit;
+        float ambient = (acc / float(kSteps)) * chord * kInnerGain;
+
+        // ⚠️ THE LETTERS ARE THE SAME FOG, DENSER — not a second substance added
+        // into the first. Their brightness is the field's own value at the plate,
+        // so they cannot drift in colour or character from the energy around
+        // them however either is tuned later, and they churn because it is the
+        // churning field being read.
+        vec3 lIn = spinInto() * (pIn - cubeOrigin());
+        float plate = letterChord(lIn, spinInto() * r1, chord);
+        float lit = plate > 1e-5
+            ? smoothstep(kFogLow, kFogHigh,
+                         carveFogField(pIn + r1 * (chord * 0.5)))
+            : 0.0;
+
+        inner = kEnergyTint * (ambient + plate * lit * kLetterGain) * uEmit;
       }
 
       // ⚠️ AND WHAT IS SEEN THROUGH IT IS TRACED, NOT FAKED. Light leaves the

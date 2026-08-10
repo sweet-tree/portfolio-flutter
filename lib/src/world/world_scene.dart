@@ -129,9 +129,7 @@ const double kCubeSize = 0.26;
 /// design, and is likely to be lifted into its own project later. Living behind
 /// `?mat=1` means it can be walked back into at any moment; living only in git
 /// would mean rebuilding to see it, which in practice means never.
-/// Still defaulting to the stone while the glass is being built — the default
-/// moves with the commit that makes 2 a real material, not before it.
-final double kMaterial = qDouble('mat', 1).clamp(0.0, 2.0);
+final double kMaterial = qDouble('mat', 2).clamp(0.0, 2.0);
 
 /// Which model lights the ancient cube's carving. `?carving=`.
 ///
@@ -143,6 +141,24 @@ final double kMaterial = qDouble('mat', 1).clamp(0.0, 2.0);
 /// because a knob compares two things on one screen in one moment, and a commit
 /// hash compares two memories.
 final double kCarvingModel = qDouble('carving', 1).clamp(0.0, 1.0);
+
+/// Where the symbols live on the glass cube. `?letters=`.
+///
+///   0  nowhere — the solid on its own
+///   1  suspended INSIDE it, as a denser region of the same fog
+///   2  frosted flat onto its faces
+///
+/// ⚠️ 1 IS NOT A FEATURE ON THE OBJECT, IT IS THE FOG GATHERED INTO A SHAPE.
+/// Every earlier attempt made the letters a separate thing that then had to be
+/// reconciled with the energy — a groove that emitted, a channel that was
+/// filled — and each time the reconciliation is what failed. Here there is
+/// nothing to reconcile: they are the same field at a higher density, so they
+/// cannot be the wrong colour or the wrong material, and they breathe because
+/// they ARE the breathing. Laser-etched crystal is the reference.
+///
+/// Both are built rather than described, because a paragraph about two things
+/// nobody can see is not something anyone can have an opinion about.
+final double kLetters = qDouble('letters', 1).clamp(0.0, 2.0);
 
 /// The cube's tuning knobs, live on the deployed build.
 ///
@@ -460,7 +476,7 @@ class _CubeCache {
   static final String _knobs = [
     kCubeSize, kCubeHalf, kCubeZ, kSpin, kMaterial, kLevel, kFuzz, kMoss,
     kLichen, kBlocks, kCarve, kGlyphSize, kEmit, kInlay, kCarvingModel,
-    kGlass, kOff,
+    kLetters, kGlass, kOff,
     // ⚠️ WHETHER THE SYMBOLS EXIST IS AN INPUT LIKE ANY OTHER. They are awaited
     // before the first frame so this should always be true — but "should
     // always" is the kind of assumption a cache key exists to not rely on. If
@@ -707,7 +723,8 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(28, kGlyphSize)
         ..setFloat(29, kEmit)
         ..setFloat(30, kInlay)
-        ..setFloat(31, kCarvingModel);
+        ..setFloat(31, kLetters)
+        ..setFloat(32, kCarvingModel);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass
