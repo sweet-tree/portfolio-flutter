@@ -217,6 +217,16 @@ final double kDisp = qDouble('disp', 0).clamp(0.0, 4.0);
 /// than a mark made of one.
 final double kCubeIor = qDouble('ior', 1).clamp(1.0, 2.4);
 
+/// How wide the symbols' edge ramp is, in pixels. `?edge=`.
+///
+/// ⚠️ ONE PIXEL IS THE TEXTBOOK ANSWER AND NOT NECESSARILY THE RIGHT ONE. A
+/// ramp exactly one pixel wide is the honest reconstruction of a hard edge;
+/// narrower is under-filtered and will show a little stepping on a
+/// near-horizontal stroke; wider is just blur. Which side of honest a LOGO
+/// belongs on is a judgement about how it reads rather than a number anyone can
+/// derive, so it is a knob and the judgement is his.
+final double kEdgeWidth = qDouble('edge', 1).clamp(0.3, 2.0);
+
 /// The cube's tuning knobs, live on the deployed build.
 ///
 /// ⚠️ THEY EXIST BECAUSE THE ALTERNATIVE IS WHAT WE DID ALL DAY: change a
@@ -818,7 +828,8 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(32, kAbsorb)
         ..setFloat(33, kDisp)
         ..setFloat(34, kCarvingModel)
-        ..setFloat(35, kCubeIor);
+        ..setFloat(35, kCubeIor)
+        ..setFloat(36, kEdgeWidth);
     }
 
     // ⚠️ EVERY DECLARED SAMPLER MUST BE BOUND ON EVERY PASS, whether that pass

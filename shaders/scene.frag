@@ -195,6 +195,16 @@ uniform float uCarving;
 /// subject IS a piece of glass rather than a mark made of one.
 uniform float uIor;
 
+/// How wide the symbols' edge ramp is, as a multiple of one pixel. `?edge=`.
+///
+/// ⚠️ ONE PIXEL IS THE TEXTBOOK ANSWER AND IT IS NOT ALWAYS THE RIGHT ONE. A
+/// ramp exactly one pixel wide is the mathematically honest reconstruction of a
+/// hard edge; below that it is technically under-filtered and will show a little
+/// stair-stepping on a near-horizontal stroke, and above it it is simply blurred.
+/// Which side of honest a LOGO should sit on is a judgement about how it reads,
+/// not a number anyone can derive — so it is his to make rather than mine.
+uniform float uEdge;
+
 uniform sampler2D uCubeLayer;
 
 /// The cast shadow and the contact darkening, baked over the table's surface.
@@ -3072,12 +3082,17 @@ vec3 shadeGlassCube(vec3 p, vec3 n, vec3 v, float lod, out vec3 emit) {
   // something existing inside it.
   float trans = 1.0 - fres;
   vec3 frost = vec3(0.0);
-  // ⚠️ THE FROST IS THE BASE UNDER BOTH 2 AND 3, and that is what makes the
-  // energy safe to switch off. Under 3 the field is added ON TOP of this rather
-  // than replacing it — so with the energy off the mark is still a mark, frosted
-  // and legible, and turning the energy on lights it rather than creating it. A
-  // logo that disappears when an effect is disabled is not a logo.
-  if (uLetters > 1.5) {
+  // ⚠️ 2 ONLY. It was briefly drawn under 3 as well, to be the base the energy
+  // added onto — and that quietly undid the entire point of path 3. The frost
+  // lives in the CACHED SCENE layer, which is rendered below the display and
+  // scaled up; the energy fill is at device resolution. Whichever of the two
+  // draws the letter's OUTLINE decides how sharp it looks, and the soft one was
+  // drawing it. The crisp pass was only brightening the inside of a soft shape.
+  //
+  // Under 3 the whole letter — frost and fill together — is drawn by the device
+  // resolution pass instead. Same base, same behaviour with the energy off, but
+  // the edge belongs to the pass that can actually resolve it.
+  if (uLetters > 1.5 && uLetters < 2.5) {
     vec3 nl = spinInto() * n;
     float aa = max(lod / max(uCubeHalf, 1e-4), 1e-5);
     // ⚠️ THE RAMP IS CENTRED ON THE EDGE, and it was not. Ramping from the
@@ -3682,12 +3697,6 @@ void main() {
   // Placed here, before the 64-sample antialiasing, because this pass wants
   // neither the material nor the supersampling — only the geometry above it.
   if (uLayer > 8.5) {
-    // ⚠️ GATED ON THE CUBE'S OWN ENERGY SWITCH. This layer is filled from the
-    // field that `?off=128` disables, and it was ignoring it — so the energy
-    // could be switched off while the letters carried on being filled by it.
-    // A switch that half of the scene obeys is worse than no switch, because
-    // what survives it looks like a finding.
-    if (isOff(128.0)) { fragColor = vec4(0.0); return; }
     if (tCube.x <= 0.0) { fragColor = vec4(0.0); return; }
     vec3 nl = spinInto() * nCube;
     // Nothing on the top or bottom: a symbol belongs on the faces you read.
@@ -3718,16 +3727,36 @@ void main() {
     vec2 uvY;
     if (faceUvAt(fragCoord + vec2(1.0, 0.0), fwd, right, up, spin, nl, uvX) &&
         faceUvAt(fragCoord + vec2(0.0, 1.0), fwd, right, up, spin, nl, uvY)) {
-      w = max(abs(glyphDist(uvX, nl) - d) + abs(glyphDist(uvY, nl) - d), 1e-6);
+      // ⚠️ LENGTH, NOT THE SUM OF THE TWO. `fwidth` is defined as the sum, and
+      // that is deliberately conservative: it over-estimates by up to 40% on a
+      // diagonal edge, which is 40% of extra blur bought for nothing. The true
+      // rate of change across a pixel is the length of the gradient, and it is
+      // the same two numbers.
+      float dx = glyphDist(uvX, nl) - d;
+      float dy = glyphDist(uvY, nl) - d;
+      w = max(length(vec2(dx, dy)) * uEdge, 1e-6);
     }
     float mask = clamp(0.5 - d / w, 0.0, 1.0);
     if (mask <= 0.0) { fragColor = vec4(0.0); return; }
 
+    // ⚠️ THE FROST IS DRAWN HERE TOO, NOT LEFT IN THE SCENE. It is the mark's
+    // base — what the letters look like with no energy in them — and whichever
+    // pass draws the base draws the OUTLINE. Left in the cached scene layer it
+    // was setting the edge at the scene's resolution and the crisp fill was only
+    // brightening the inside of a soft shape.
+    vec3 l = normalize(kLightPos - hit);
+    vec3 base = envColor(nCube) * 0.55 + vec3(max(dot(nCube, l), 0.0)) * 0.30;
+
     // Filled from the field, sampled a little way INSIDE the solid so the
     // letters read as lit by what is in the cube rather than by a film on it.
-    float dens = smoothstep(kFogLow, kFogHigh,
-                            carveFogField(hit - rd * (uCubeHalf * 0.6)));
-    vec3 lit = kEnergyTint * dens * uEmit * kLetterFill;
+    // Switched off with the cube's own energy — the frost stays either way.
+    vec3 fill = vec3(0.0);
+    if (!isOff(128.0)) {
+      float dens = smoothstep(kFogLow, kFogHigh,
+                              carveFogField(hit - rd * (uCubeHalf * 0.6)));
+      fill = kEnergyTint * dens * uEmit * kLetterFill;
+    }
+    vec3 lit = base + fill;
     // ⚠️ PREMULTIPLIED, AND ADDED RATHER THAN LAID OVER. Light travelling
     // through a mark can only ever ADD; it must never leave the glass behind it
     // darker than it was. Laid over opaquely — which is what this did — a letter
