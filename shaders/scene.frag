@@ -3763,8 +3763,20 @@ void main() {
       // fixed (what it reflects, where its edges are, how far light travels
       // through it) and this holds what is not.
       float chord = emitSum.r * cubeChordMax();
+      // How much gets IN: one minus Fresnel, and then whatever the frosting
+      // takes on top of that.
       float trans = emitSum.g;
-      float fres = 1.0 - trans;
+
+      // ⚠️ FRESNEL COMES FROM THE GEOMETRY, NOT FROM `trans`, and deriving it
+      // from `trans` was a real bug: the frosted letters reduce transmission, so
+      // reading reflectance back out of it made every letter reflect as if it
+      // were edge-on. They came out as mirrors. Reflection is a property of the
+      // ANGLE; frosting is a property of the SURFACE; one cannot be recovered
+      // from the other once they have been multiplied together.
+      float nDotV = max(dot(nCube, -rd), 1e-4);
+      float f0 = pow((1.0 - kIor) / (1.0 + kIor), 2.0);
+      float fres = f0 + (1.0 - f0) * pow(1.0 - nDotV, 5.0);
+
       vec3 pIn = kEye + rd * tCube.x;
       vec3 r1 = refract(rd, nCube, 1.0 / kIor);
 
@@ -3859,16 +3871,23 @@ void main() {
       // faces, which is the sort of absence the eye reads as wrong without being
       // able to name.
       //
-      // ⚠️ AND IT IS TRACED ONLY WHERE FRESNEL MAKES IT WORTH SEEING. Looking
-      // straight into a face, four percent comes back and the approximation is
-      // indistinguishable; toward the silhouette it climbs to everything, and
-      // there the difference is the whole material. Same coherent band as the
-      // dispersion test above.
+      // ⚠️ AND IT IS TRACED EVERYWHERE, because gating it was a shortcut and it
+      // SHOWED. I skipped the trace where Fresnel was under six percent, on the
+      // grounds that the approximation is indistinguishable when it is that dim.
+      // It is not: dim and DIFFERENT is still different, and the switch drew a
+      // hard vertical band across every face at the angle where it flipped —
+      // which is the artefact he pointed at.
+      //
+      // The lesson generalises past this line. A cheap path may only replace an
+      // expensive one where the two AGREE, never merely where the result is
+      // faint. The dispersion test above is gated correctly by that standard: it
+      // asks whether the three channels have separated at all, which is a
+      // question about whether the answers differ.
       vec3 rr = reflect(rd, nCube);
-      vec3 reflected = fres > 0.055 && !isOff(16.0)
-          ? traceBackdrop(pIn + rr * 1e-3, rr, spin, fragCoord, uvScreen,
-                          aspect, rotation)
-          : envColor(rr);
+      vec3 reflected = isOff(16.0)
+          ? envColor(rr)
+          : traceBackdrop(pIn + rr * 1e-3, rr, spin, fragCoord, uvScreen,
+                          aspect, rotation);
 
       // ⚠️ ABSORBED OVER THE DISTANCE IT TRAVELLED. This is what gives the solid
       // its body: a ray clipping a corner arrives almost intact, one crossing
@@ -3879,11 +3898,16 @@ void main() {
       vec3 absorbFull = exp(-kGlassAbsorb * chord);
       vec3 absorbHalf = exp(-kGlassAbsorb * chord * 0.5);
 
-      // ⚠️ REFLECT OR TRANSMIT, NEVER BOTH ADDED — the same energy-conserving
-      // mix the sheet uses, and the reason a dielectric looks like one. Adding
-      // them is how glass ends up brighter than what is behind it.
+      // ⚠️ EACH WITH ITS OWN WEIGHT, NOT MIXED BY FRESNEL. A mix() puts the
+      // frosting's attenuation on the wrong side of the balance: what the frost
+      // takes out of the transmitted half does not reappear in the reflected
+      // half — it scatters, and that scattering is drawn separately. `trans`
+      // already carries one-minus-Fresnel AND the frosting, so it weights
+      // transmission by itself; reflection takes Fresnel. Their sum still cannot
+      // exceed one, which is what keeps this energy conserving.
       float rim = isOff(256.0) ? 0.0 : emitSum.b * kEdgeGain;
-      emitted = mix(through * absorbFull, reflected, fres) +
+      emitted = through * absorbFull * trans +
+                reflected * fres +
                 inner * absorbHalf +
                 kEnergyTint * rim * uEmit;
     } else if (tCube.x > 0.0 && uCarving < 0.5) {
