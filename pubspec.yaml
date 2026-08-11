@@ -13,10 +13,21 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The one exception, and it earns it: this is a *website*, so /work/<project>
-  # has to be a real URL that can be pasted into a CV, survive a refresh, and
-  # work with the back button. Hand-rolling Navigator 2.0 on web is genuinely
-  # unpleasant for no payoff anyone can see.
+  # Sequencing and gesture-driven animation, and — the real reason — the
+  # `flutter_shaders` it brings with it. `AnimatedSampler` renders a widget
+  # subtree into a ui.Image at device resolution and hands it to a callback, so
+  # a fragment shader of ours can be fed REAL FLUTTER CONTENT as a sampler.
+  #
+  # ⚠️ That route matters because the obvious one does not exist here:
+  # `ui.ImageFilter.shader` is Impeller-only and web_ui's copy throws
+  # unconditionally, so there is no built-in way to put a .frag over widgets on
+  # web. See lib/src/world/glass_card.dart.
+  flutter_animate: ^4.5.2
+
+  # This is a *website*, so /work/<project> has to be a real URL that can be
+  # pasted into a CV, survive a refresh, and work with the back button.
+  # Hand-rolling Navigator 2.0 on web is genuinely unpleasant for no payoff
+  # anyone can see.
   go_router: ^17.4.0
   web: ^1.1.1
 

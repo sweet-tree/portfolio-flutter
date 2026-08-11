@@ -20,10 +20,12 @@ import 'package:flutter/material.dart' show Material;
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:portfolio/src/chrome/nav.dart';
+import 'package:portfolio/src/chrome/rail.dart';
 import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
 import 'package:portfolio/src/query_params.dart';
+import 'package:portfolio/src/world/glass_card.dart';
 import 'package:portfolio/src/world/hero_panel.dart';
 import 'package:portfolio/src/world/locations.dart';
 import 'package:portfolio/src/world/type_glow.dart';
@@ -102,12 +104,24 @@ class _WorldViewState extends State<WorldView> {
           // untouched and stays crisp.
           const TypeGlow(),
           WorldNav(index: _index, onGo: _go),
+          // ⚠️ CHROME SITS OVER EVERYTHING, INCLUDING A CARD. The header and
+          // the rail are the frame the world is seen through — content arrives
+          // BETWEEN them, never on top of them.
+          WorldRail(index: _index, onGo: _go),
         ],
       ],
     ),
   );
 }
 
+/// A location that is not the hero: its content, on a pane of glass.
+///
+/// ⚠️ THE CARD IS BOUNDED BY THE CHROME, and that is the whole layout rule. It
+/// starts under the nav and stops above the rail, so both stay legible on the
+/// scene itself and the card never becomes the frame. Its left and right edges
+/// land on the same margin the wordmark and the rail sit on — the composition
+/// has one vertical, and a card that ignored it would be the only thing on the
+/// page that did.
 class _LocationPanel extends StatelessWidget {
   const _LocationPanel({required this.location});
 
@@ -115,30 +129,46 @@ class _LocationPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final top = fluid(context.vw, min: 96, max: 152);
+    final gutter = ContentColumn.gutterOf(context);
+    final inset = fluid(context.vw, min: Space.md, max: Space.lg);
     return Padding(
-      padding: EdgeInsets.only(top: top, bottom: Space.xl),
-      // Full frame width, not the 720px prose column: the heading is the
-      // dominant mass of the composition, and a mass constrained to reading
-      // width is just a large paragraph.
-      child: ContentColumn(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(location.role, style: AppType.label(context)),
-            // Anchors the heading to the bottom of the frame. A mass sitting
-            // on the lower edge reads as planted; floated in the middle it
-            // reads as undecided.
-            const Spacer(),
-            // Keyed because several locations share a word with their own nav
-            // link, so text alone cannot tell the display title from the link
-            // that travels to it.
-            Text(
-              location.title,
-              key: Key('title-${location.path}'),
-              style: AppType.display(context),
-            ),
-          ],
+      padding: EdgeInsets.fromLTRB(
+        gutter,
+        kNavHeight,
+        gutter,
+        // Clear of the rail by the same gap the hero leaves.
+        gutter + railHeightOf(context) + gutter,
+      ),
+      child: GlassCard(
+        child: Padding(
+          padding: EdgeInsets.all(fluid(context.vw, min: Space.lg, max: 56)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(location.role, style: AppType.label(context)),
+              SizedBox(height: inset),
+              // Keyed because several locations share a word with their own
+              // nav link, so text alone cannot tell the display title from the
+              // link that goes to it.
+              Text(
+                location.title,
+                key: Key('title-${location.path}'),
+                style: AppType.display(context),
+              ),
+              SizedBox(height: inset),
+              // ⚠️ THE PAGE STILL NEVER SCROLLS — the card does, inside itself.
+              // That is the same rule the world has always had, and it is what
+              // keeps Safari's URL bar from moving the viewport underneath us.
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Text(
+                    location.body,
+                    style: AppType.body(context),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

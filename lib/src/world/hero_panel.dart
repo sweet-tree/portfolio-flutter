@@ -15,6 +15,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 import 'package:portfolio/src/chrome/nav.dart' show kNavHeight;
+import 'package:portfolio/src/chrome/rail.dart' show railHeightOf;
 import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
@@ -66,7 +67,16 @@ class _HeroPanelState extends State<HeroPanel> {
     final statementShare = context.isCompact ? 0.74 : 0.54;
     return Padding(
       key: _panel,
-      padding: EdgeInsets.fromLTRB(gutter, kNavHeight, gutter, gutter),
+      // ⚠️ THE RAIL'S SPACE IS RESERVED, NOT OCCUPIED. The rail is chrome and
+      // draws itself over the whole world now, so this panel has to leave room
+      // for it instead of ending with it: its own bottom margin, the rail, and
+      // the gap that used to sit above it.
+      padding: EdgeInsets.fromLTRB(
+        gutter,
+        kNavHeight,
+        gutter,
+        gutter + railHeightOf(context) + gutter,
+      ),
       child: LayoutBuilder(
         builder: (context, constraints) => Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -124,8 +134,6 @@ class _HeroPanelState extends State<HeroPanel> {
                 ],
               ),
             ),
-            SizedBox(height: gutter),
-            _BottomRail(index: widget.index, onGo: widget.onGo),
           ],
         ),
       ),
@@ -133,22 +141,7 @@ class _HeroPanelState extends State<HeroPanel> {
   }
 }
 
-/// How tall the bottom rail is, without having to lay it out to find out.
-///
-/// The statement's placement is solved against the VIEWPORT — where the light
-/// is, where the cube's base is — so it needs to know where the field it lives
-/// in actually ends, and that is the rail's top edge. Derived from the same
-/// constants the rail is built from rather than measured, because the answer is
-/// needed while deciding a font size, which is well before anything has been
-/// laid out.
-///
-/// Compact frames stack the rail into two rows; wide ones keep it on one.
-double railHeightOf(BuildContext context) {
-  const line = 12 * 1.2; // AppType.label: 12px at a height of 1.2
-  return context.isCompact
-      ? 1 + Space.md + line + Space.sm + line
-      : 1 + Space.md + line;
-}
+// railHeightOf moved to chrome/rail.dart with the rail it measures.
 
 /// Leading, as a fraction of the size of the line it belongs to.
 ///
@@ -730,180 +723,5 @@ class _Name extends StatelessWidget {
   );
 }
 
-/// The bottom rail: status on the left, position in the world on the right.
-///
-/// The position indicator replaces the scroll cue a normal site would have.
-/// Nothing here scrolls, so a first-time visitor has no way to guess there is
-/// more than this screen unless something tells them — this is that something.
-class _BottomRail extends StatelessWidget {
-  const _BottomRail({required this.index, required this.onGo});
-
-  final int index;
-  final ValueChanged<int> onGo;
-
-  @override
-  Widget build(BuildContext context) {
-    final next = index + 1;
-    final hasNext = next < kLocations.length;
-    return Column(
-      children: [
-        const ColoredBox(
-          color: Palette.line,
-          child: SizedBox(height: 1, width: double.infinity),
-        ),
-        const SizedBox(height: Space.md),
-        // Four items do not fit in one row at 390px — the first phone build
-        // pushed the index and the next-link clean off the right edge. On a
-        // narrow frame the rail becomes two rows instead of overflowing.
-        if (context.isCompact)
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _status(context, tight: false),
-              const SizedBox(height: Space.sm),
-              Row(
-                children: _position(context, next: next, hasNext: hasNext),
-              ),
-            ],
-          )
-        else
-          Row(
-            children: [
-              _status(context),
-              const Spacer(),
-              ..._position(context, next: next, hasNext: hasNext),
-            ],
-          ),
-      ],
-    );
-  }
-
-  /// The name lives here, as metadata. It is the least useful fact on the page
-  /// for someone deciding whether to call him, so it does not get to be the
-  /// biggest thing on it.
-  ///
-  /// ⚠️ IT WRAPS RATHER THAN TRUNCATES on a narrow frame. Ellipsising it read
-  /// as "AVAILABLE…" on an iPhone SE, which is worse than useless: the one
-  /// word that got cut is the one that matters, and a truncated line looks
-  /// like a bug rather than a decision. A Wrap moves the whole phrase to its
-  /// own run instead, so the information survives at any width.
-  ///
-  /// [tight] sizes the row to its content, which the desktop layout needs so
-  /// the Spacer after it can push the index right.
-  Widget _status(BuildContext context, {bool tight = true}) {
-    final name = Text(
-      'DMITRY SEVRYUKOV',
-      style: AppType.label(context).copyWith(color: Palette.ink),
-    );
-    final availability = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _StatusDot(),
-        const SizedBox(width: Space.sm),
-        Text(
-          // Shortened rather than ellipsised on a phone: the short form is the
-          // same information and fits.
-          context.isCompact
-              ? 'AVAILABLE · REMOTE'
-              : 'AVAILABLE FOR REMOTE WORK',
-          style: AppType.label(context),
-        ),
-      ],
-    );
-
-    if (tight) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [name, const SizedBox(width: Space.lg), availability],
-      );
-    }
-    return Wrap(
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: Space.lg,
-      runSpacing: Space.xs,
-      children: [name, availability],
-    );
-  }
-
-  List<Widget> _position(
-    BuildContext context, {
-    required int next,
-    required bool hasNext,
-  }) => [
-    Text(
-      '${_two(index + 1)} / ${_two(kLocations.length)}',
-      style: AppType.label(context),
-    ),
-    if (hasNext) ...[
-      const SizedBox(width: Space.lg),
-      _NextLink(label: kLocations[next].label, onTap: () => onGo(next)),
-    ],
-  ];
-
-  static String _two(int n) => n.toString().padLeft(2, '0');
-}
-
-class _StatusDot extends StatelessWidget {
-  const _StatusDot();
-
-  @override
-  Widget build(BuildContext context) => Container(
-    width: 6,
-    height: 6,
-    decoration: const BoxDecoration(
-      color: Palette.accent,
-      shape: BoxShape.circle,
-    ),
-  );
-}
-
-/// Points at the next location. Doubles as the cue that the world continues
-/// past the right edge of the frame.
-class _NextLink extends StatefulWidget {
-  const _NextLink({required this.label, required this.onTap});
-
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  State<_NextLink> createState() => _NextLinkState();
-}
-
-class _NextLinkState extends State<_NextLink> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) => MouseRegion(
-    cursor: SystemMouseCursors.click,
-    onEnter: (_) => setState(() => _hovered = true),
-    onExit: (_) => setState(() => _hovered = false),
-    child: GestureDetector(
-      onTap: widget.onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            'NEXT · ${widget.label.toUpperCase()}',
-            style: AppType.label(
-              context,
-            ).copyWith(color: _hovered ? Palette.ink : Palette.inkMuted),
-          ),
-          const SizedBox(width: Space.sm),
-          // Nudges right on hover — the direction reading takes you.
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            transform: Matrix4.translationValues(_hovered ? 4 : 0, 0, 0),
-            child: Text(
-              '→',
-              style: AppType.label(
-                context,
-              ).copyWith(color: _hovered ? Palette.accent : Palette.inkMuted),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-}
+// The bottom rail used to live here, as the last row of this panel's column.
+// It is chrome, not hero, and now sits beside the nav — see chrome/rail.dart.
