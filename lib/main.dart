@@ -79,14 +79,15 @@ Future<void> main() async {
 
 /// The location the page was opened at, before the router exists.
 ///
-/// Written to survive either URL strategy rather than assuming the current one:
-/// go_router defaults to the hash on web, so the path lives in the fragment,
-/// but nothing here would notice being switched to real paths later.
-String get _initialPath {
-  final base = Uri.base;
-  if (base.fragment.startsWith('/')) return base.fragment;
-  return base.path.isEmpty ? '/' : base.path;
-}
+/// ⚠️ ASKED OF THE PLATFORM, NOT PARSED OUT OF THE URL BY HAND. This was two
+/// lines picking through `Uri.base` — try the fragment, fall back to the path —
+/// which is a guess about which URL strategy is in force, written in a second
+/// place that has to be kept in step with the first. `defaultRouteName` is the
+/// engine's own answer to the same question and cannot disagree with itself.
+String get _initialPath =>
+    Uri.parse(
+      WidgetsBinding.instance.platformDispatcher.defaultRouteName,
+    ).path;
 
 /// Releases the held frame once the statement has been rasterised.
 ///
@@ -99,8 +100,8 @@ void _releaseWhenStatementIsSet(WidgetsBinding binding) {
   void release() {
     if (released) return;
     released = true;
-    typeGlyphs.removeListener(release);
-    // Off the frame: the notifier fires from inside a post-frame callback, and
+    statementPainted.removeListener(release);
+    // Off the frame: the flag is set from inside a post-frame callback, and
     // allowFirstFrame wants the scheduler idle.
     Timer.run(binding.allowFirstFrame);
   }
@@ -110,8 +111,8 @@ void _releaseWhenStatementIsSet(WidgetsBinding binding) {
   // thrown exception — this is what guarantees the visitor still gets a page
   // instead of an eternally blank one. It should never fire.
   Timer(const Duration(seconds: 2), release);
-  typeGlyphs.addListener(release);
-  if (typeGlyphs.value != null) release();
+  statementPainted.addListener(release);
+  if (statementPainted.value) release();
 }
 
 /// Routes are generated from the location list, so a stop can never exist

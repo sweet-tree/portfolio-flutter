@@ -47,13 +47,18 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
             while header in self.headers:
                 del self.headers[header]
 
-        # ⚠️ FALL BACK TO index.html FOR UNKNOWN PATHS, or real URLs are only
-        # testable in production. The site uses path URLs — /work, not /#/work —
-        # so every deep link is a path this server has no file for, and it
-        # answered 404 while Cloudflare served the app. That is the worst shape
-        # for a bug: it works where you cannot debug it and fails where you can.
-        path = self.translate_path(self.path)
-        if not os.path.exists(path) and "." not in os.path.basename(path):
+        # ⚠️ FALL BACK TO index.html FOR ANYTHING THAT IS NOT A FILE, or real
+        # URLs are only testable in production. The site uses path URLs —
+        # /work, not /#/work — so every deep link is a path this server has no
+        # file for, and it answered 404 while Cloudflare served the app: a bug
+        # that works where you cannot debug it and fails where you can.
+        #
+        # The test is whether the path names something on disk, which is the
+        # actual question. It was "does the last segment contain a dot", which
+        # is a guess about what a filename looks like — it would have served the
+        # app for a missing image and 404'd a section called /v1.2.
+        target = self.translate_path(self.path)
+        if not os.path.isfile(target) and not os.path.isdir(target):
             self.path = "/index.html"
         return super().send_head()
 

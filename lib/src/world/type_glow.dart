@@ -224,8 +224,77 @@ class TypeGlyphs {
   final double pixelRatio;
 }
 
-/// The current rasterisation, or null before the first layout.
-final ValueNotifier<TypeGlyphs?> typeGlyphs = ValueNotifier<TypeGlyphs?>(null);
+/// One statement's rasterisation, owned by the statement it belongs to.
+///
+/// ⚠️ NOT A GLOBAL. It was, and the whole class of bug that followed came from
+/// that: a mask left behind after its sentence was gone kept being drawn, so
+/// the hero's statement painted over the next section; and clearing it meant
+/// reaching into a notifier other statements might also be using, which needed
+/// an identity check to be safe and a deferral to be legal.
+///
+/// Scoped, none of that exists. The mask is created with the statement and
+/// disposed with it, by the same widget, in the ordinary way.
+class StatementMask extends ChangeNotifier {
+  TypeGlyphs? _glyphs;
+  TypeGlyphs? get glyphs => _glyphs;
+
+  set glyphs(TypeGlyphs? value) {
+    if (identical(_glyphs, value)) return;
+    _glyphs?.image.dispose();
+    _glyphs = value;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _glyphs?.image.dispose();
+    _glyphs = null;
+    super.dispose();
+  }
+}
+
+/// Hands the statement's mask to everything inside it.
+class StatementScope extends StatefulWidget {
+  const StatementScope({required this.child, super.key});
+
+  final Widget child;
+
+  static StatementMask of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<_StatementScope>();
+    assert(scope != null, 'No StatementScope above this widget.');
+    return scope!.notifier!;
+  }
+
+  @override
+  State<StatementScope> createState() => _StatementScopeState();
+}
+
+class _StatementScopeState extends State<StatementScope> {
+  final StatementMask _mask = StatementMask();
+
+  @override
+  void dispose() {
+    _mask.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      _StatementScope(notifier: _mask, child: widget.child);
+}
+
+class _StatementScope extends InheritedNotifier<StatementMask> {
+  const _StatementScope({required super.notifier, required super.child});
+}
+
+/// Set once, when a statement has been rasterised for the first time.
+///
+/// ⚠️ THIS IS GENUINELY GLOBAL AND WRITE-ONCE, which is why it is safe where a
+/// shared mask was not. It answers one question — has the page got something
+/// complete to show yet — asked by main() while holding the first frame. It is
+/// never cleared, so nothing can be torn down through it.
+final ValueNotifier<bool> statementPainted = ValueNotifier<bool>(false);
 
 /// True once the glow can draw the statement itself.
 ///
@@ -297,39 +366,15 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
     PaintingBinding.instance.systemFonts.addListener(_onFontsChanged);
   }
 
-  /// The last rasterisation this capture put into [typeGlyphs].
-  ///
-  /// ⚠️ THE MASK IS GLOBAL AND THE STATEMENT IS NOT. [typeGlyphs] is one
-  /// notifier for the whole app, so a mask left in it after its statement has
-  /// gone keeps being drawn — the hero's sentence was painting over Section
-  /// Two, in the hero's place, because nothing ever took it out again. It never
-  /// showed while the world travelled: the block was measured against the panel
-  /// and the panel had moved a screen away, so the leftover was drawn off the
-  /// side of the window rather than on top of the next section.
-  TypeGlyphs? _published;
+  /// The mask this statement writes into. Owned by [StatementScope], created
+  /// with the statement and disposed with it — so nothing here has to reach
+  /// into shared state, check whether what it finds is its own, or clean up
+  /// after itself on the way out.
+  StatementMask get _mask => StatementScope.of(context);
 
   @override
   void dispose() {
     PaintingBinding.instance.systemFonts.removeListener(_onFontsChanged);
-    // ⚠️ ONLY IF IT IS STILL OURS. Whoever published last owns it; clearing
-    // blind would take away a mask another statement had just put there.
-    final mine = _published;
-    if (mine != null && identical(typeGlyphs.value, mine)) {
-      // ⚠️ AND NOT NOW — AFTER THE FRAME. dispose() runs inside `finalizeTree`,
-      // which unmounts with the widget tree LOCKED, so notifying a listener
-      // here asks it to rebuild at the one moment rebuilding is forbidden:
-      // "setState() or markNeedsBuild() called when widget tree was locked".
-      //
-      // It is the statement's own colour layer that listens, so this tore that
-      // layer down illegally in the middle of the frame the sentence was
-      // leaving on — the assertion is loud in debug and silent in release, but
-      // the badly-timed teardown happens either way.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!identical(typeGlyphs.value, mine)) return;
-        typeGlyphs.value = null;
-        mine.image.dispose();
-      });
-    }
     super.dispose();
   }
 
@@ -450,14 +495,15 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
     final image = picture.toImageSync(width, height);
     picture.dispose();
 
-    typeGlyphs.value?.image.dispose();
-    typeGlyphs.value = _published = TypeGlyphs(
+    // The mask disposes whatever it held; it owns these images.
+    _mask.glyphs = TypeGlyphs(
       image: image,
       block: area,
       payoff: payoffAreas,
       viewport: viewport,
       pixelRatio: ratio,
     );
+    statementPainted.value = true;
   }
 
   /// Where each named word landed, in the panel's coordinates and in reading
@@ -558,15 +604,16 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
   Widget build(BuildContext context) {
     // After layout — the render object has no size or position until then.
     WidgetsBinding.instance.addPostFrameCallback((_) => _rebuild());
+    final mask = StatementScope.of(context);
     return ValueListenableBuilder<bool>(
       valueListenable: typeGlowReady,
-      builder: (context, ready, _) => ValueListenableBuilder<TypeGlyphs?>(
-        valueListenable: typeGlyphs,
-        builder: (context, glyphs, _) => KeyedSubtree(
+      builder: (context, ready, _) => AnimatedBuilder(
+        animation: mask,
+        builder: (context, _) => KeyedSubtree(
           key: _block,
           child: widget.builder(
             context,
-            visible: !(ready && glyphs != null),
+            visible: !(ready && mask.glyphs != null),
           ),
         ),
       ),
@@ -618,20 +665,19 @@ class _TypeGlowState extends State<TypeGlow>
   Widget build(BuildContext context) {
     final shader = _shader;
     if (shader == null) return const SizedBox.shrink();
-    return ValueListenableBuilder<TypeGlyphs?>(
-      valueListenable: typeGlyphs,
-      builder: (context, glyphs, _) => glyphs == null
-          ? const SizedBox.shrink()
-          : IgnorePointer(
-              child: CustomPaint(
-                painter: _GlowPainter(
-                  shader: shader,
-                  glyphs: glyphs,
-                  time: _time,
-                ),
-                size: Size.infinite,
-              ),
-            ),
+    final mask = StatementScope.of(context);
+    return AnimatedBuilder(
+      animation: mask,
+      builder: (context, _) {
+        final glyphs = mask.glyphs;
+        if (glyphs == null) return const SizedBox.shrink();
+        return IgnorePointer(
+          child: CustomPaint(
+            painter: _GlowPainter(shader: shader, glyphs: glyphs, time: _time),
+            size: Size.infinite,
+          ),
+        );
+      },
     );
   }
 }

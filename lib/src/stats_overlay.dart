@@ -2,8 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:portfolio/src/cross_origin.dart' as platform;
 import 'package:portfolio/src/query_params.dart';
-import 'package:web/web.dart' as web;
 
 /// True when the page was opened with `?stats=1`.
 ///
@@ -120,9 +120,9 @@ class _StatsOverlayState extends State<StatsOverlay>
                     ),
                   ),
                   Text(
-                    'isolated: ${web.window.crossOriginIsolated}',
+                    'isolated: ${platform.crossOriginIsolated}',
                     style: TextStyle(
-                      color: web.window.crossOriginIsolated
+                      color: platform.crossOriginIsolated
                           ? const Color(0xFF4ADE80)
                           : const Color(0xFFF87171),
                     ),

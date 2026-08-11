@@ -39,14 +39,19 @@ class LocationPage extends StatelessWidget {
     // ⚠️ AND THIS ONLY HOLDS FOR A TRANSLATION. Those two conversions cancel
     // exactly under a slide; under a perspective transform they do not, and the
     // sentence is drawn twice at two sizes. That was built, and looked at.
-    return Stack(
-      children: [
-        Positioned.fill(child: HeroPanel(location: location)),
-        // ABOVE the panel, so it adds to the letters rather than being hidden
-        // behind them. It only ever adds light — the type underneath stays
-        // crisp.
-        const Positioned.fill(child: TypeGlow()),
-      ],
+    // ⚠️ THE SCOPE IS WHAT MAKES THE MASK BELONG TO THIS STATEMENT. Both halves
+    // read it from here, and it is created and destroyed with this page — so a
+    // sentence cannot outlive itself and be drawn over the next section.
+    return StatementScope(
+      child: Stack(
+        children: [
+          Positioned.fill(child: HeroPanel(location: location)),
+          // ABOVE the panel, so it adds to the letters rather than being hidden
+          // behind them. It only ever adds light — the type underneath stays
+          // crisp.
+          const Positioned.fill(child: TypeGlow()),
+        ],
+      ),
     );
   }
 }
