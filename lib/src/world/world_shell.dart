@@ -25,6 +25,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart' show Material;
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
@@ -49,8 +50,23 @@ import 'package:portfolio/src/world/world_scene.dart';
 /// so type positioned against grey would be positioned against a fiction.
 final bool bareScene = qFlag('bare');
 
-/// How far a finger has to move before it is a swipe rather than a twitch.
-const double _kIntent = 8;
+/// How far a finger must move before this counts as a swipe, in logical pixels.
+///
+/// ⚠️ THE PLATFORM DEFAULT IS ABOUT EIGHTEEN, AND THAT IS THE FLOOR EVERYTHING
+/// ELSE SITS ON. Flutter does not report a horizontal drag at all until the
+/// pointer has travelled `kTouchSlop`, so a genuinely small swipe never becomes
+/// a drag and nothing downstream — projection, buffering, thresholds — can
+/// rescue it.
+///
+/// Eighteen is chosen so that a TAP is never mistaken for a drag. There is very
+/// little to tap in a section: the nav and the rail are above this and handle
+/// their own taps, and a card's links will be their own recognisers. So the
+/// slop can come down without costing anything.
+///
+/// ⚠️ AND IT IS SET ON THIS RECOGNISER ALONE, not through MediaQuery. Lowering
+/// it for the subtree would make the card's own scrolling twitchy too, which is
+/// a different gesture with a different reason for its threshold.
+const DeviceGestureSettings _kSwipeSlop = DeviceGestureSettings(touchSlop: 1);
 
 class WorldShell extends StatefulWidget {
   const WorldShell({required this.drag, required this.child, super.key});
@@ -68,7 +84,48 @@ class WorldShell extends StatefulWidget {
 class _WorldShellState extends State<WorldShell> {
   /// Null until this drag has decided what it is doing.
   bool? _forward;
-  double _travelled = 0;
+
+  /// Our own measurement of how fast the finger is going.
+  ///
+  /// ⚠️ `DragEndDetails.velocity` IS A FLING VELOCITY, NOT A VELOCITY. The
+  /// recogniser asks whether the gesture qualifies as a fling — faster than
+  /// about 50 px/s AND past a minimum distance — and if it does not it reports
+  /// EXACTLY ZERO rather than the real number.
+  ///
+  /// So every swipe below that bar arrived with no velocity, the projection
+  /// contributed nothing, and the outcome fell back to raw distance alone: a
+  /// clear swipe measuring 0.11 of the width against a 0.3 line, returned. It
+  /// was identical on every section, which is what ruled out everything else.
+  ///
+  /// A VelocityTracker is the same machinery without the classification: it
+  /// answers how fast, and leaves what that means to us.
+  VelocityTracker? _speed;
+
+  /// ⚠️ AND IT NEEDS REAL TIMESTAMPS, WHICH THE WEB DOES NOT ALWAYS GIVE.
+  /// `sourceTimeStamp` is null there, and defaulting it to zero told the
+  /// tracker every sample happened at the same instant — so the estimate came
+  /// back small and with an arbitrary sign: 96 pixels per second POINTING RIGHT
+  /// on a swipe that went left. A velocity is a distance over a time, and with
+  /// no time there is no velocity.
+  ///
+  /// ⚠️ AND ONE CLOCK, NEVER TWO. Taking the platform's stamp when it exists
+  /// and ours when it does not puts the samples of a single gesture on two
+  /// different timelines, and the estimate between them is meaningless — which
+  /// is why some swipes still came back at exactly zero. Consistency matters
+  /// more here than which clock it is.
+  final Stopwatch _clock = Stopwatch();
+
+  /// How far this gesture has moved while still undecided.
+  ///
+  /// ⚠️ THE DIRECTION COMES FROM THE MOVEMENT SO FAR, NOT FROM ONE SAMPLE, and
+  /// nothing is thrown away while deciding. It used to read a single delta,
+  /// which made the FIRST section behave differently from the others: at home
+  /// there is nothing behind, so a sample that happened to point backwards was
+  /// refused and discarded, and the swipe only began on some later sample. At
+  /// work either direction is available, so no sample is ever refused and it
+  /// starts at once. That is why leaving home felt heavier than anything else,
+  /// and it was jitter in the first pixels rather than the size of the swipe.
+  double _undecided = 0;
 
   /// Which section is on top.
   ///
@@ -84,19 +141,38 @@ class _WorldShellState extends State<WorldShell> {
 
   void _start() {
     _forward = null;
-    _travelled = 0;
+    _undecided = 0;
+    _speed = VelocityTracker.withKind(PointerDeviceKind.touch);
+    _clock
+      ..reset()
+      ..start();
   }
 
   void _update(DragUpdateDetails details) {
     final width = context.size?.width ?? 1;
-    // Which way this is going is decided once, on the first real movement, and
-    // then held: a drag that wavered would otherwise flip mid-flight.
+    final dx = details.delta.dx;
+    _speed?.addPosition(
+      _clock.elapsed,
+      details.globalPosition,
+    );
+
+    // ⚠️ NO THRESHOLD OF OUR OWN. This update does not happen until Flutter's
+    // recogniser has already seen kTouchSlop — about 18 logical pixels — and
+    // decided the gesture is a horizontal drag. Asking for another eight on top
+    // re-implemented a decision that had already been made, and pushed the dead
+    // zone past twenty-five pixels: a very small swipe was consumed entirely by
+    // the wait and nothing ever began.
+    //
+    // Direction is decided once, on the first movement, and then held. A drag
+    // that wavered would otherwise flip mid-flight.
     if (_forward == null) {
-      _travelled += details.delta.dx;
-      if (_travelled.abs() < _kIntent) return;
-      final forward = _travelled < 0;
+      _undecided += dx;
+      if (_undecided == 0) return;
+      final forward = _undecided < 0;
       final index = _index;
       if (forward) {
+        // Nothing after the last section: keep waiting rather than starting
+        // something there is nowhere to take.
         if (index + 1 >= kLocations.length) return;
         _forward = true;
         // The destination does not exist yet. Asking for it and taking hold of
@@ -108,22 +184,21 @@ class _WorldShellState extends State<WorldShell> {
         _forward = false;
         widget.drag.beginBack(width);
       }
-      // The movement that decided the direction is part of the gesture.
-      widget.drag.update(-_travelled);
+      // Everything moved while deciding belongs to the gesture.
+      widget.drag.update(-_undecided);
       return;
     }
-    widget.drag.update(-details.delta.dx);
+    widget.drag.update(-dx);
   }
 
   void _end(DragEndDetails details) {
     final forward = _forward;
     _forward = null;
-    _travelled = 0;
+    final measured = _speed?.getVelocity().pixelsPerSecond.dx ?? 0;
+    _speed = null;
+    _clock.stop();
     if (forward == null) return;
-    widget.drag.release(
-      details.velocity.pixelsPerSecond.dx,
-      forward: forward,
-    );
+    widget.drag.release(measured, forward: forward);
   }
 
   /// A nav click or the rail's next link.
@@ -149,12 +224,21 @@ class _WorldShellState extends State<WorldShell> {
         const Positioned.fill(child: WorldScene()),
         if (!bareScene) ...[
           Positioned.fill(
-            child: GestureDetector(
-              // Sideways only. A vertical drag belongs to whatever is under
-              // it, which is the card scrolling its own text.
-              onHorizontalDragStart: (_) => _start(),
-              onHorizontalDragUpdate: _update,
-              onHorizontalDragEnd: _end,
+            child: RawGestureDetector(
+              gestures: <Type, GestureRecognizerFactory>{
+                // Sideways only. A vertical drag belongs to whatever is under
+                // it, which is the card scrolling its own text.
+                HorizontalDragGestureRecognizer:
+                    GestureRecognizerFactoryWithHandlers<
+                      HorizontalDragGestureRecognizer
+                    >(HorizontalDragGestureRecognizer.new, (recogniser) {
+                      recogniser
+                        ..onStart = ((_) => _start())
+                        ..onUpdate = _update
+                        ..onEnd = _end
+                        ..gestureSettings = _kSwipeSlop;
+                    }),
+              },
               child: widget.child,
             ),
           ),

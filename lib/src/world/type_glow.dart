@@ -654,7 +654,48 @@ class _TypeGlowState extends State<TypeGlow>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _followRoute(ModalRoute.of(context));
+  }
+
+  ModalRoute<dynamic>? _route;
+
+  /// ⚠️ A SECTION ON ITS WAY OUT DOES NOT NEED TO KEEP ANIMATING, and this is
+  /// the most expensive layer on the site: the statement's colour is computed
+  /// per pixel every frame and measured at roughly half a frame on a desktop.
+  ///
+  /// While a swipe carries the hero away, the hero and the section arriving are
+  /// both live, and the hero was still paying that every frame — on the one
+  /// gesture that can least afford it, because slow frames mean few pointer
+  /// samples, a poor velocity estimate and a swipe that feels stuck. Leaving
+  /// home was noticeably heavier than moving between two cards, which cost
+  /// nothing like it.
+  ///
+  /// So the energy runs while the statement is the section you are on, and
+  /// holds still while it is leaving. It is moving across the screen at the
+  /// time; nobody is reading the flow in it.
+  void _followRoute(ModalRoute<dynamic>? route) {
+    if (identical(route, _route)) return;
+    _route?.animation?.removeListener(_onRouteMoved);
+    _route = route;
+    _route?.animation?.addListener(_onRouteMoved);
+    _onRouteMoved();
+  }
+
+  void _onRouteMoved() {
+    final showing = _route?.isCurrent ?? true;
+    if (showing == _ticker.isActive) return;
+    if (showing) {
+      unawaited(_ticker.start());
+    } else {
+      _ticker.stop();
+    }
+  }
+
+  @override
   void dispose() {
+    _route?.animation?.removeListener(_onRouteMoved);
     _ticker.dispose();
     _shader?.dispose();
     typeGlowReady.value = false;

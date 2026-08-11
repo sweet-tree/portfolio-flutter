@@ -31,26 +31,35 @@ import 'package:portfolio/src/world/locations.dart';
 /// remainder of a throw.
 const Duration kSectionTravel = Duration(milliseconds: 320);
 
-/// How long the movement is assumed to keep going after the finger lifts.
+/// How far a section must have moved for the swipe to be meant, in pixels.
 ///
-/// ⚠️ THE OUTCOME IS DECIDED BY WHERE IT WOULD LAND, NOT BY TWO SEPARATE
-/// THRESHOLDS. It used to ask "did it travel far enough?" OR "was it thrown
-/// hard enough?", and a small quick swipe falls between the two: not far, not
-/// fast, so it rolled back even though every part of it said forward.
+/// ⚠️ A SWIPE STATES INTENT — IT DOES NOT POSITION ANYTHING. That is the whole
+/// model, and getting it wrong is what made this feel broken for an afternoon.
 ///
-/// Projecting the release velocity forward for a fraction of a second and
-/// asking whether THAT is past halfway is one continuous test. A short flick
-/// projects a long way; a slow deliberate drag gets there on distance alone;
-/// and a hesitant one that stops short still returns, which is what a hesitant
-/// gesture should do.
+/// A DRAG is continuous positioning: you move the thing, and where you release
+/// decides. Under that model a slow, short, deliberate drag correctly returns,
+/// because you did not take it far — and the only way to make it commit is to
+/// put the point of no return a few percent from the edge, at which point every
+/// accidental sideways movement navigates.
 ///
-/// A quarter of a second is roughly how long a flicked thing keeps moving
-/// before friction takes it, and it is the same order the framework's own page
-/// physics use.
-const double _kProjection = 0.25;
+/// A SWIPE is a statement: direction is the message, and distance only has to
+/// show you meant it. Twenty-odd pixels is past any twitch and nowhere near a
+/// deliberate movement, so a slow small swipe and a fast one both land — which
+/// is what a person doing it expects.
+///
+/// Dragging back to where you started still returns, because the section has
+/// not moved: cancelling is expressed by putting it back, not by falling short.
+const double _kMeantIt = 14;
 
 /// How the remainder settles once a finger lets go.
 const Curve _kSettle = Curves.easeOut;
+
+/// A flick this fast means it even if it barely moved.
+///
+/// Not a second threshold arguing with the first — a different way of meaning
+/// the same thing. A short sharp flick moves almost nothing and is unmistakably
+/// deliberate.
+const double _kFlick = 150;
 
 /// The route a section is shown by.
 class SectionPage extends Page<void> {
@@ -326,13 +335,13 @@ class SectionDrag {
     final transition = route.transition;
     if (transition == null) return;
 
-    // A leftward throw is negative pixels and drives the transition UP, so the
-    // sign turns over.
-    final perSecond = -velocity / _width;
-    final landing = transition.value + perSecond * _kProjection;
-    // Forwards completes at 1, backwards at 0 — so the same halfway line means
-    // opposite outcomes.
-    final complete = forward ? landing > 0.5 : landing < 0.5;
+    // Did this say anything? Either it moved far enough to be meant, or it was
+    // flicked hard enough to be meant. Both are the same statement.
+    final moved = transition.value * _width;
+    final travelled = forward ? moved : _width - moved;
+    // Forwards is a leftward throw; backwards is a rightward one.
+    final flicked = forward ? velocity < -_kFlick : velocity > _kFlick;
+    final complete = travelled >= _kMeantIt || flicked;
 
     if (forward == complete) {
       unawaited(
