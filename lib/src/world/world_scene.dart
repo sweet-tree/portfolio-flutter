@@ -16,13 +16,8 @@ import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/query_params.dart';
 import 'package:portfolio/src/world/carving.dart';
 import 'package:portfolio/src/world/shaders.dart';
-import 'package:portfolio/src/world/world_camera.dart';
 
-/// Where the cube sits inside its own location, as a fraction of the viewport.
-///
-/// It travels WITH its section: at camera position 1 the hero is one screen to
-/// the left, so the cube is too. That falls out of the maths below rather than
-/// needing to be animated.
+/// Where the cube sits in the frame, as a fraction of the viewport.
 const double kCubeX = 0.5;
 const double kCubeY = 0.34;
 
@@ -411,9 +406,7 @@ final double kOff = qDouble('off', 1024);
 final double kFrozenTime = qDouble('t', -1);
 
 class WorldScene extends StatefulWidget {
-  const WorldScene({required this.camera, super.key});
-
-  final WorldCamera camera;
+  const WorldScene({super.key});
 
   @override
   State<WorldScene> createState() => _WorldSceneState();
@@ -474,9 +467,9 @@ class _WorldSceneState extends State<WorldScene>
     _lettersShader = Shaders.scene?.fragmentShader();
     _innerShader = Shaders.scene?.fragmentShader();
     _fieldShader = Shaders.scene?.fragmentShader();
-    // ⚠️ Runs CONTINUOUSLY, unlike the camera's ticker. Ambient motion is the
-    // point of the field, so there is no idle state — a standing cost, and the
-    // reason fill rate has to be measured rather than assumed.
+    // ⚠️ Runs CONTINUOUSLY, and it is now the only ticker in the app. Ambient
+    // motion is the point of the field, so there is no idle state — a standing
+    // cost, and the reason fill rate has to be measured rather than assumed.
     _ticker = createTicker((elapsed) {
       setState(() {
         _time = kFrozenTime >= 0
@@ -550,8 +543,6 @@ class _WorldSceneState extends State<WorldScene>
         lightCache: _lightCache,
         bandCache: _bandCache,
         time: _time,
-        camera: widget.camera.position,
-        velocity: widget.camera.velocity,
         cache: _cubeCache,
       ),
       size: Size.infinite,
@@ -652,8 +643,8 @@ class _CubeCache {
 
   /// Everything the cube's shading depends on. `time` is deliberately absent:
   /// that is the entire reason this works.
-  static String signatureFor(Size low, double camera) =>
-      '${low.width},${low.height},$camera,$_knobs';
+  static String signatureFor(Size low) =>
+      '${low.width},${low.height},$_knobs';
 
   void dispose() {
     image?.dispose();
@@ -674,8 +665,7 @@ class _CubeCache {
 ///
 /// ⚠️ IT DEPENDS ON THE CUBE ALONE — not on the camera, not on the viewport,
 /// not on the window size. Fixed light, fixed occluder, fixed floor. So unlike
-/// the cube's layer, travelling does not invalidate this at all, and neither
-/// does resizing the browser.
+/// the cube's layer, not even resizing the browser invalidates this.
 ///
 /// Stored in the surface's own coordinate rather than on screen. The table
 /// stretches away from the camera, so a screen-shaped map would be dense where
@@ -724,14 +714,12 @@ class _LightCache {
 class _BandCache {
   ui.Image? image;
   Size? at;
-  double camera = double.nan;
   double turn = double.nan;
 
   /// The sky's rotation, in radians. ⚠️ MIRRORS `bandOnly` IN THE SHADER — if
   /// the rates there change, this has to follow or the band stops refreshing at
   /// the right moments.
-  static double turnFor(double time, double camera) =>
-      time * 0.010 + camera * 0.085;
+  static double turnFor(double time) => time * 0.010;
 
   /// How far the sky may turn before this is redrawn, in radians.
   ///
@@ -746,21 +734,16 @@ class _BandCache {
   static double toleranceFor(Size low) =>
       1.0 / (_kFocal * low.shortestSide * kCubeSize);
 
-  bool stale(Size low, double time, double camera) =>
+  bool stale(Size low, double time) =>
       image == null ||
       at != low ||
-      // The camera does not only turn the sky, it re-aims every ray — so any
-      // movement at all invalidates this, and during travel it redraws every
-      // frame. That is correct, and travel is two seconds of a visit.
-      this.camera != camera ||
-      (turnFor(time, camera) - turn).abs() > toleranceFor(low);
+      (turnFor(time) - turn).abs() > toleranceFor(low);
 
-  void store(ui.Image fresh, Size low, double time, double camera) {
+  void store(ui.Image fresh, Size low, double time) {
     image?.dispose();
     image = fresh;
     at = low;
-    this.camera = camera;
-    turn = turnFor(time, camera);
+    turn = turnFor(time);
   }
 
   void dispose() {
@@ -787,8 +770,6 @@ class _ScenePainter extends CustomPainter {
     required this.lightCache,
     required this.bandCache,
     required this.time,
-    required this.camera,
-    required this.velocity,
     required this.cache,
   });
 
@@ -806,8 +787,6 @@ class _ScenePainter extends CustomPainter {
   final ui.FragmentShader fieldShader;
   final double devicePixelRatio;
   final double time;
-  final double camera;
-  final double velocity;
   final _CubeCache cache;
   final _LightCache lightCache;
   final _BandCache bandCache;
@@ -835,12 +814,6 @@ class _ScenePainter extends CustomPainter {
     );
     if (low.isEmpty) return;
 
-    // The cube belongs to the first location, so travelling moves it off
-    // screen with its section — which falls out of the maths in configure()
-    // rather than needing to be animated. Everything there is derived from the
-    // size of the pass being configured, so the composition is identical at any
-    // of them once upscaled.
-
     // Every uniform except the layer mode, which the caller supplies. Written
     // once and applied to both shaders so the two passes cannot drift apart.
     void configure(ui.FragmentShader s, double layer, [Size? at]) {
@@ -849,7 +822,7 @@ class _ScenePainter extends CustomPainter {
       // where the cube's origin lands and how many pixels a world unit spans,
       // both in the CURRENT target's pixels. A smaller pass that inherited the
       // full-size numbers would aim every ray somewhere else.
-      final tCubeX = target.width * (kCubeX - camera);
+      final tCubeX = target.width * kCubeX;
       final tCubeY = target.height * kCubeY;
       final tUnit = target.shortestSide * kCubeSize;
       // Flat indices in declaration order from the .frag.
@@ -857,8 +830,13 @@ class _ScenePainter extends CustomPainter {
         ..setFloat(0, target.width)
         ..setFloat(1, target.height)
         ..setFloat(2, time)
-        ..setFloat(3, camera)
-        ..setFloat(4, velocity)
+        // uCamera and uVelocity. Both zero now that the world does not travel,
+        // and both still DECLARED in the .frag: indices follow declaration
+        // order including uniforms nothing reads, so deleting one would
+        // silently shift every index after it and land every value in the
+        // wrong slot, with no error anywhere.
+        ..setFloat(3, 0)
+        ..setFloat(4, 0)
         ..setFloat(5, tCubeX)
         ..setFloat(6, tCubeY)
         ..setFloat(7, tUnit)
@@ -969,10 +947,10 @@ class _ScenePainter extends CustomPainter {
 
     // ── The light map, baked only when the cube itself changes ──────────────
     //
-    // Nothing about the camera reaches this: it is the shadow an object casts
-    // on a floor under a fixed light, in the surface's own coordinates. So it
-    // survives travelling and window resizes untouched, and in practice is
-    // computed exactly once for the life of the page.
+    // Nothing about the viewpoint reaches this: it is the shadow an object
+    // casts on a floor under a fixed light, in the surface's own coordinates.
+    // So it survives window resizes untouched, and in practice is computed
+    // exactly once for the life of the page.
     final wantLight = _LightCache.wanted;
     if (lightCache.signature != wantLight || lightCache.image == null) {
       final lightLow = Size(
@@ -1006,10 +984,8 @@ class _ScenePainter extends CustomPainter {
       (low.width * 0.25).roundToDouble(),
       (low.height * 0.25).roundToDouble(),
     );
-    if (bandCache.stale(low, time, camera)) {
-      bandCache.store(
-        renderSmall(bandShader, 4, bandLow), low, time, camera,
-      );
+    if (bandCache.stale(low, time)) {
+      bandCache.store(renderSmall(bandShader, 4, bandLow), low, time);
     }
     final bandImage = bandCache.image!;
     final energyImage = renderSmall(energyShader, 5, bandLow);
@@ -1040,12 +1016,14 @@ class _ScenePainter extends CustomPainter {
 
     // ── The cube's shading, redrawn only when something it depends on moves ──
     //
-    // In production that means once, on load, and then never: the camera only
-    // moves while travelling between sections, which is a couple of seconds of
-    // a visit. During that motion the cube is redrawn every frame — correctly,
-    // because panning changes which rays strike it — and it is sliding off the
-    // screen anyway.
-    final want = _CubeCache.signatureFor(low, camera);
+    // In production that means once, on load, and then never — the window
+    // being resized is the only thing left that can invalidate it.
+    //
+    // ✅ IT USED TO BE INVALIDATED BY TRAVEL, every frame of it, because panning
+    // changes which rays strike the cube. With the world standing still that
+    // whole case is gone: the most expensive thing in the scene is now computed
+    // exactly once for the life of the page.
+    final want = _CubeCache.signatureFor(low);
     if (cache.signature != want ||
         cache.image == null ||
         cache.emit == null ||
@@ -1190,8 +1168,5 @@ class _ScenePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ScenePainter old) =>
-      old.time != time ||
-      old.camera != camera ||
-      old.velocity != velocity ||
-      old.devicePixelRatio != devicePixelRatio;
+      old.time != time || old.devicePixelRatio != devicePixelRatio;
 }

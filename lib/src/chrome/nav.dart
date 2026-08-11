@@ -1,9 +1,13 @@
-/// The nav. Pinned, never travels, and reads the camera directly.
+/// The nav. Pinned, and reads which location is showing.
 ///
-/// The active indicator tracks the camera's CONTINUOUS position rather than
-/// the nearest stop, so it slides while you travel instead of snapping when
-/// you arrive. That one detail is most of what makes the nav feel attached to
-/// the world rather than laid on top of it.
+/// ⚠️ THE INDICATOR USED TO BE CONTINUOUS, and that is worth knowing before
+/// anyone calls the current one crude. The world travelled on a spring, so the
+/// underline could track a position BETWEEN stops and slide as you went, which
+/// was most of what made the nav feel attached to the world rather than laid on
+/// top of it. There is no between any more — a location is showing or it is
+/// not — so the highlight is a state, not a distance.
+///
+/// Whatever replaces travel gets to decide whether it earns a transition again.
 library;
 
 import 'package:flutter/widgets.dart';
@@ -11,14 +15,15 @@ import 'package:portfolio/src/design/layout.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
 import 'package:portfolio/src/world/locations.dart';
-import 'package:portfolio/src/world/world_camera.dart';
 
 const double kNavHeight = 72;
 
 class WorldNav extends StatelessWidget {
-  const WorldNav({required this.camera, super.key});
+  const WorldNav({required this.index, required this.onGo, super.key});
 
-  final WorldCamera camera;
+  /// Which location is showing.
+  final int index;
+  final ValueChanged<int> onGo;
 
   @override
   Widget build(BuildContext context) => Positioned(
@@ -29,17 +34,20 @@ class WorldNav extends StatelessWidget {
     child: ContentColumn(
       child: Row(
         children: [
-          _Wordmark(camera: camera),
+          _NavLink(
+            label: 'DS',
+            active: index == 0,
+            bold: true,
+            onTap: () => onGo(0),
+          ),
           const Spacer(),
           for (var i = 1; i < kLocations.length; i++)
             Padding(
               padding: const EdgeInsets.only(left: Space.lg),
               child: _NavLink(
                 label: kLocations[i].label,
-                // Full strength at the stop, fading out by the time you are
-                // one location away.
-                proximity: (1 - (camera.position - i).abs()).clamp(0.0, 1.0),
-                onTap: () => camera.jumpTo(i),
+                active: index == i,
+                onTap: () => onGo(i),
               ),
             ),
         ],
@@ -48,32 +56,18 @@ class WorldNav extends StatelessWidget {
   );
 }
 
-class _Wordmark extends StatelessWidget {
-  const _Wordmark({required this.camera});
-
-  final WorldCamera camera;
-
-  @override
-  Widget build(BuildContext context) => _NavLink(
-    label: 'DS',
-    proximity: (1 - camera.position.abs()).clamp(0.0, 1.0),
-    bold: true,
-    onTap: () => camera.jumpTo(0),
-  );
-}
-
 class _NavLink extends StatefulWidget {
   const _NavLink({
     required this.label,
-    required this.proximity,
+    required this.active,
     required this.onTap,
     this.bold = false,
   });
 
   final String label;
 
-  /// 0 when the camera is a location away or more, 1 when it is here.
-  final double proximity;
+  /// Whether this is the location currently showing.
+  final bool active;
   final VoidCallback onTap;
   final bool bold;
 
@@ -86,7 +80,7 @@ class _NavLinkState extends State<_NavLink> {
 
   @override
   Widget build(BuildContext context) {
-    final lit = widget.proximity.clamp(0.0, 1.0);
+    final lit = widget.active ? 1.0 : 0.0;
     final base = AppType.ui(context).copyWith(
       fontWeight: widget.bold ? FontWeight.w700 : null,
     );

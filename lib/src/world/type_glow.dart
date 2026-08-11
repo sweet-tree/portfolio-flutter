@@ -203,9 +203,7 @@ class TypeGlyphs {
   /// pixel, covering exactly [block].
   final ui.Image image;
 
-  /// Where those glyphs sit in the hero panel's coordinates. Measured against
-  /// the panel rather than the screen so that travelling does not change it —
-  /// the camera offset is applied in the shader, where it is one subtraction.
+  /// Where those glyphs sit in the hero panel's coordinates.
   final Rect block;
 
   /// Where the named words sit, in the SAME coordinates as [block]. Empty when
@@ -299,9 +297,26 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
     PaintingBinding.instance.systemFonts.addListener(_onFontsChanged);
   }
 
+  /// The last rasterisation this capture put into [typeGlyphs].
+  ///
+  /// ⚠️ THE MASK IS GLOBAL AND THE STATEMENT IS NOT. [typeGlyphs] is one
+  /// notifier for the whole app, so a mask left in it after its statement has
+  /// gone keeps being drawn — the hero's sentence was painting over Section
+  /// Two, in the hero's place, because nothing ever took it out again. It never
+  /// showed while the world travelled: the block was measured against the panel
+  /// and the panel had moved a screen away, so the leftover was drawn off the
+  /// side of the window rather than on top of the next section.
+  TypeGlyphs? _published;
+
   @override
   void dispose() {
     PaintingBinding.instance.systemFonts.removeListener(_onFontsChanged);
+    // ⚠️ ONLY IF IT IS STILL OURS. Whoever published last owns it; clearing
+    // blind would take away a mask another statement had just put there.
+    if (identical(typeGlyphs.value, _published) && _published != null) {
+      typeGlyphs.value?.image.dispose();
+      typeGlyphs.value = null;
+    }
     super.dispose();
   }
 
@@ -423,7 +438,7 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
     picture.dispose();
 
     typeGlyphs.value?.image.dispose();
-    typeGlyphs.value = TypeGlyphs(
+    typeGlyphs.value = _published = TypeGlyphs(
       image: image,
       block: area,
       payoff: payoffAreas,
@@ -548,10 +563,7 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
 
 /// Draws the statement, coloured by the energy that reaches it.
 class TypeGlow extends StatefulWidget {
-  const TypeGlow({required this.camera, super.key});
-
-  /// The camera's position in locations, so the colour travels with the panel.
-  final double camera;
+  const TypeGlow({super.key});
 
   @override
   State<TypeGlow> createState() => _TypeGlowState();
@@ -603,7 +615,6 @@ class _TypeGlowState extends State<TypeGlow>
                   shader: shader,
                   glyphs: glyphs,
                   time: _time,
-                  camera: widget.camera,
                 ),
                 size: Size.infinite,
               ),
@@ -617,13 +628,11 @@ class _GlowPainter extends CustomPainter {
     required this.shader,
     required this.glyphs,
     required this.time,
-    required this.camera,
   });
 
   final ui.FragmentShader shader;
   final TypeGlyphs glyphs;
   final double time;
-  final double camera;
 
   /// Renders the shader into its own buffer.
   ///
@@ -645,7 +654,10 @@ class _GlowPainter extends CustomPainter {
       // be told is how this particular buffer relates to them.
       ..setFloat(6, scale)
       ..setFloat(7, time)
-      ..setFloat(8, camera)
+      // uCamera. Zero, and the uniform stays DECLARED in the .frag: indices
+      // follow declaration order including uniforms nothing reads, so deleting
+      // it would silently shift every index after it.
+      ..setFloat(8, 0)
       ..setFloat(9, kGlowGain)
       ..setFloat(10, kGlowKnee)
       ..setFloat(11, mode);
@@ -666,9 +678,6 @@ class _GlowPainter extends CustomPainter {
     final area = glyphs.block;
     if (area.isEmpty || !kGlowOn) return;
 
-    // Panel coordinates back to screen: the panel travels one viewport width
-    // per location.
-    final shift = Offset(-camera * glyphs.viewport.width, 0);
     final glyphSize =
         Size(glyphs.image.width.toDouble(), glyphs.image.height.toDouble());
 
@@ -686,7 +695,7 @@ class _GlowPainter extends CustomPainter {
     final wholeStatement = regions.length == 1 && regions.first == area;
 
     if (kWordBox) {
-      _outline(canvas, area, regions, shift);
+      _outline(canvas, area);
     }
 
     // ⚠️ THE REST OF THE SENTENCE IS DRAWN FROM THE SAME RASTERISATION, in one
@@ -710,13 +719,13 @@ class _GlowPainter extends CustomPainter {
     if (!wholeStatement) {
       canvas.save();
       for (final region in regions) {
-        canvas.clipRect(region.shift(shift), clipOp: ui.ClipOp.difference);
+        canvas.clipRect(region, clipOp: ui.ClipOp.difference);
       }
       canvas
         ..drawImageRect(
           glyphs.image,
           Offset.zero & glyphSize,
-          area.shift(shift),
+          area,
           Paint()
             ..colorFilter = const ui.ColorFilter.mode(
               Palette.ink,
@@ -729,7 +738,7 @@ class _GlowPainter extends CustomPainter {
     }
 
     for (final region in regions) {
-      _drawRegion(canvas, region, area, shift, size.height);
+      _drawRegion(canvas, region, area, size.height);
     }
   }
 
@@ -744,13 +753,13 @@ class _GlowPainter extends CustomPainter {
   /// ⚠️ UNDER THE LETTERS, NOT OVER THEM, so the sentence stays readable while
   /// the rectangles are being judged against it. Blue is the whole statement,
   /// red is each named word.
-  void _outline(Canvas canvas, Rect area, List<Rect> regions, Offset shift) {
+  void _outline(Canvas canvas, Rect area) {
     final stroke = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
-    canvas.drawRect(area.shift(shift), stroke..color = const Color(0xFF3D7BFF));
+    canvas.drawRect(area, stroke..color = const Color(0xFF3D7BFF));
     for (final r in glyphs.payoff) {
-      canvas.drawRect(r.shift(shift), stroke..color = const Color(0xFFFF3B30));
+      canvas.drawRect(r, stroke..color = const Color(0xFFFF3B30));
     }
   }
 
@@ -759,7 +768,6 @@ class _GlowPainter extends CustomPainter {
     Canvas canvas,
     Rect region,
     Rect area,
-    Offset shift,
     double viewportHeight,
   ) {
     // The part of the rasterisation lying under this region.
@@ -797,7 +805,7 @@ class _GlowPainter extends CustomPainter {
       area.left + glyphSrc.right / sx,
       area.top + glyphSrc.bottom / sy,
     );
-    final dst = snapped.shift(shift);
+    final dst = snapped;
 
     // ⚠️ SIZED IN LOGICAL PIXELS, NOT DEVICE PIXELS. See kColourScale — these
     // hold a smooth gradient, and the sharpness of the result comes entirely
@@ -903,5 +911,5 @@ class _GlowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GlowPainter old) =>
-      old.time != time || old.camera != camera || old.glyphs != glyphs;
+      old.time != time || old.glyphs != glyphs;
 }

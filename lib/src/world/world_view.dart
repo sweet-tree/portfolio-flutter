@@ -1,16 +1,22 @@
-/// The world: one fixed viewport, the locations in it, and how you travel
-/// between them.
+/// The world: one fixed viewport, one scene, and the locations shown in it.
 ///
 /// ⚠️ THE PAGE ITSELF NEVER SCROLLS. Only the content panels do, inside their
 /// own boxes. Besides being the concept, this kills a whole class of mobile
 /// bugs: Safari's URL bar only collapses on document scroll, so if the
 /// document never scrolls the viewport height never changes underneath us.
+///
+/// ⚠️ THE CAMERA NO LONGER TRAVELS — 2026-08-11. The world used to be one
+/// continuous space with the locations laid side by side, and navigating slid
+/// the whole thing past the window on a spring. That is retired: the scene is
+/// one fixed view, and a location is simply what is shown in front of it.
+///
+/// The travel is not lost. It is tagged `one-world-v1` in this repo, complete
+/// and working, and extracted as a standalone package at
+/// `~/Documents/AI/one-world-travel` — camera, wiring, tests and the three
+/// traps that made it hard.
 library;
 
-import 'dart:async';
-
 import 'package:flutter/material.dart' show Material;
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:portfolio/src/chrome/nav.dart';
@@ -21,7 +27,6 @@ import 'package:portfolio/src/query_params.dart';
 import 'package:portfolio/src/world/hero_panel.dart';
 import 'package:portfolio/src/world/locations.dart';
 import 'package:portfolio/src/world/type_glow.dart';
-import 'package:portfolio/src/world/world_camera.dart';
 import 'package:portfolio/src/world/world_scene.dart';
 
 /// `?bare=1` — the scene and nothing else: no panels, no nav, no statement.
@@ -44,130 +49,61 @@ class WorldView extends StatefulWidget {
   State<WorldView> createState() => _WorldViewState();
 }
 
-class _WorldViewState extends State<WorldView>
-    with SingleTickerProviderStateMixin {
-  late final WorldCamera _camera = WorldCamera(count: kLocations.length);
-  late final Ticker _ticker;
-  Duration? _last;
-
-  /// The stop the URL currently names. Kept so the camera settling can rewrite
-  /// the URL without that rewrite bouncing back and re-targeting the camera.
-  int _urlIndex = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _ticker = createTicker(_onTick);
-    _camera.addListener(_onCameraChanged);
-  }
-
-  /// The ticker only runs while the camera actually has somewhere to go.
-  ///
-  /// Leaving it running permanently pins the site at 60fps forever — it drains
-  /// a phone battery for nothing, and it makes `pumpAndSettle` in a widget
-  /// test wait forever, which is how this was caught.
-  void _wake() {
-    if (!_ticker.isActive) {
-      _last = null;
-      unawaited(_ticker.start());
-    }
-  }
-
-  void _onCameraChanged() {
-    _wake();
-    _syncUrl();
-  }
-
-  void _onTick(Duration elapsed) {
-    final previous = _last;
-    _last = elapsed;
-    final dt = previous == null
-        ? 1 / 60
-        : (elapsed - previous).inMicroseconds / 1e6;
-    if (dt > 0) _camera.tick(dt);
-    if (!_camera.moving) _ticker.stop();
-  }
+class _WorldViewState extends State<WorldView> {
+  /// Which location is in front of the scene. The whole of the navigation
+  /// state, now that there is no space to be part-way through.
+  int _index = 0;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Browser back/forward and pasted URLs arrive here. Travel to them rather
-    // than cutting, so history navigation looks the same as clicking.
-    final path = GoRouterState.of(context).matchedLocation;
-    final index = indexOfPath(path);
-    if (index != _urlIndex) {
-      _urlIndex = index;
-      _camera.target = index.toDouble();
-    }
+    // Browser back/forward and pasted URLs arrive here.
+    final index = indexOfPath(GoRouterState.of(context).matchedLocation);
+    if (index != _index) setState(() => _index = index);
   }
 
-  /// Rewrites the URL once the camera has actually settled somewhere new.
+  /// A nav click. The URL is written immediately rather than on arrival —
+  /// there is no arrival any more.
   ///
-  /// `replace`, not `go`: travelling is not a history event, or the back
-  /// button would walk back through every stop the visitor drifted past.
-  void _syncUrl() {
-    if (_camera.moving) return;
-    final index = _camera.nearest;
-    if (index == _urlIndex) return;
-    _urlIndex = index;
-    if (mounted) context.replace(kLocations[index].path);
+  /// `replace`, not `go`: moving between sections of one view is not a history
+  /// event, or the back button would walk back through every section visited.
+  void _go(int index) {
+    if (index == _index) return;
+    setState(() => _index = index);
+    context.replace(kLocations[index].path);
   }
-
-  @override
-  void dispose() {
-    _camera
-      ..removeListener(_onCameraChanged)
-      ..dispose();
-    _ticker.dispose();
-    super.dispose();
-  }
-
-  // ── input ──────────────────────────────────────────────────────────────────
-  //
-  // NAV CLICKS ONLY, on purpose. Drag, wheel, the panel-edge handoff and the
-  // keyboard were all written at once and none of them was verified on its
-  // own; the drag was wrong. They come back one at a time, each proven before
-  // the next is added.
 
   @override
   Widget build(BuildContext context) => Material(
     color: Palette.bg,
-    child: LayoutBuilder(
-      builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        return AnimatedBuilder(
-          animation: _camera,
-          builder: (context, _) => Stack(
-            children: [
-              Positioned.fill(child: WorldScene(camera: _camera)),
-              // Everything except the scene comes off for ?bare=1.
-              if (!bareScene) ...[
-                for (var i = 0; i < kLocations.length; i++)
-                  Positioned(
-                    left: (i - _camera.position) * width,
-                    top: 0,
-                    width: width,
-                    height: constraints.maxHeight,
-                    // Only the hero is composed by hand so far. The others keep
-                    // the plain panel until their turn comes.
-                    child: i == 0
-                        ? HeroPanel(location: kLocations[i], camera: _camera)
-                        : _LocationPanel(location: kLocations[i]),
-                  ),
-                // The light the statement throws off when the energy reaches
-                // it.
-                //
-                // ABOVE the panels, so it adds to the letters rather than being
-                // hidden behind them, and below the nav, which is chrome and
-                // should not glow. It only ever adds light — the type
-                // underneath is untouched and stays crisp.
-                TypeGlow(camera: _camera.position),
-                WorldNav(camera: _camera),
-              ],
-            ],
+    child: Stack(
+      children: [
+        const Positioned.fill(child: WorldScene()),
+        // Everything except the scene comes off for ?bare=1.
+        if (!bareScene) ...[
+          // ⚠️ ONLY THE CURRENT ONE IS BUILT. Under travel all three existed at
+          // once, side by side, because you could be looking at two of them.
+          // Nothing is ever half-way between them now, so the other two would
+          // be laid out, painted and thrown away every frame for nothing.
+          Positioned.fill(
+            child: _index == 0
+                ? HeroPanel(
+                    location: kLocations[0],
+                    index: _index,
+                    onGo: _go,
+                  )
+                : _LocationPanel(location: kLocations[_index]),
           ),
-        );
-      },
+          // The light the statement throws off when the energy reaches it.
+          //
+          // ABOVE the panels, so it adds to the letters rather than being
+          // hidden behind them, and below the nav, which is chrome and should
+          // not glow. It only ever adds light — the type underneath is
+          // untouched and stays crisp.
+          const TypeGlow(),
+          WorldNav(index: _index, onGo: _go),
+        ],
+      ],
     ),
   );
 }

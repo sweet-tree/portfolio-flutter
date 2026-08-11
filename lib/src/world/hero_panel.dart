@@ -20,17 +20,24 @@ import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/design/type.dart';
 import 'package:portfolio/src/world/locations.dart';
 import 'package:portfolio/src/world/type_glow.dart';
-import 'package:portfolio/src/world/world_camera.dart';
 // For the cube's placement. The statement is positioned against the LIGHT, and
 // the light's position is derived from the cube's — so the layout reads the
 // same constants the shader does rather than keeping its own copy.
 import 'package:portfolio/src/world/world_scene.dart';
 
 class HeroPanel extends StatefulWidget {
-  const HeroPanel({required this.location, required this.camera, super.key});
+  const HeroPanel({
+    required this.location,
+    required this.index,
+    required this.onGo,
+    super.key,
+  });
 
   final Location location;
-  final WorldCamera camera;
+
+  /// Which location is showing, for the rail's position counter.
+  final int index;
+  final ValueChanged<int> onGo;
 
   @override
   State<HeroPanel> createState() => _HeroPanelState();
@@ -38,18 +45,16 @@ class HeroPanel extends StatefulWidget {
 
 class _HeroPanelState extends State<HeroPanel> {
   /// The statement's position is measured against this rather than against the
-  /// screen, so that travelling does not change it — the camera offset is
-  /// applied in the shader, where it is one addition.
+  /// screen.
   ///
   /// ⚠️ IT HAS TO LIVE IN STATE. As a field on a StatelessWidget it would be a
-  /// new key on every rebuild, and this panel rebuilds every frame the camera
-  /// moves; a changed GlobalKey tears the subtree down and builds it again.
+  /// new key on every rebuild, and a changed GlobalKey tears the subtree down
+  /// and builds it again.
   final GlobalKey _panel = GlobalKey();
 
   @override
   Widget build(BuildContext context) {
     final location = widget.location;
-    final camera = widget.camera;
     // The same margin the nav uses. Read from one place so the wordmark, the
     // role line, the name and the bottom rail all sit on a single vertical.
     final gutter = ContentColumn.gutterOf(context);
@@ -120,7 +125,7 @@ class _HeroPanelState extends State<HeroPanel> {
               ),
             ),
             SizedBox(height: gutter),
-            _BottomRail(camera: camera),
+            _BottomRail(index: widget.index, onGo: widget.onGo),
           ],
         ),
       ),
@@ -728,16 +733,17 @@ class _Name extends StatelessWidget {
 /// The bottom rail: status on the left, position in the world on the right.
 ///
 /// The position indicator replaces the scroll cue a normal site would have.
-/// Nothing here scrolls, so a first-time visitor has no way to guess the site
-/// goes sideways unless something tells them — this is that something.
+/// Nothing here scrolls, so a first-time visitor has no way to guess there is
+/// more than this screen unless something tells them — this is that something.
 class _BottomRail extends StatelessWidget {
-  const _BottomRail({required this.camera});
+  const _BottomRail({required this.index, required this.onGo});
 
-  final WorldCamera camera;
+  final int index;
+  final ValueChanged<int> onGo;
 
   @override
   Widget build(BuildContext context) {
-    final next = camera.nearest + 1;
+    final next = index + 1;
     final hasNext = next < kLocations.length;
     return Column(
       children: [
@@ -825,15 +831,12 @@ class _BottomRail extends StatelessWidget {
     required bool hasNext,
   }) => [
     Text(
-      '${_two(camera.nearest + 1)} / ${_two(kLocations.length)}',
+      '${_two(index + 1)} / ${_two(kLocations.length)}',
       style: AppType.label(context),
     ),
     if (hasNext) ...[
       const SizedBox(width: Space.lg),
-      _NextLink(
-        label: kLocations[next].label,
-        onTap: () => camera.jumpTo(next),
-      ),
+      _NextLink(label: kLocations[next].label, onTap: () => onGo(next)),
     ],
   ];
 
@@ -887,7 +890,7 @@ class _NextLinkState extends State<_NextLink> {
             ).copyWith(color: _hovered ? Palette.ink : Palette.inkMuted),
           ),
           const SizedBox(width: Space.sm),
-          // Nudges right on hover — the direction you are about to travel.
+          // Nudges right on hover — the direction reading takes you.
           AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             curve: Curves.easeOutCubic,

@@ -1,12 +1,12 @@
-/// The stops in the world, in travel order.
+/// The locations in the world, in order.
 ///
 /// This list is the single source of truth for navigation: the router, the nav
-/// and the camera all derive from it, so a stop cannot exist without a URL and
-/// a URL cannot point at a stop that isn't there. Adding or removing a section
+/// and the view all derive from it, so a location cannot exist without a URL
+/// and a URL cannot point at one that isn't there. Adding or removing a section
 /// is a one-line edit here and nothing else.
 ///
 /// ⚠️ THE BODY TEXT IS DELIBERATELY FAKE. It exists only to be long enough to
-/// scroll, which is what the panel/travel arbitration is tested against. Real
+/// overflow a panel, so that scrolling inside one has something to do. Real
 /// copy comes later, from the owner — nothing here should ever read as a claim
 /// about him or his work.
 library;
@@ -94,8 +94,7 @@ class Location {
 
 const String _filler =
     'PLACEHOLDER. Real copy goes here later. This paragraph exists only so '
-    'the panel has enough text to scroll, which is how the handoff between '
-    'scrolling a panel and travelling the world gets tested.';
+    'the panel has enough text to overflow its own box and scroll inside it.';
 
 const List<Location> kLocations = [
   Location(

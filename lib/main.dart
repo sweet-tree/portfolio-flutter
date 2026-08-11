@@ -2,10 +2,11 @@
 ///
 /// Web only. Routing, theme, and the single view that everything lives in.
 ///
-/// THERE ARE NO PAGES. Every route builds the same [WorldView]; the URL only
-/// says which location the camera should travel to. That is why every route
-/// here uses a `NoTransitionPage` — a page transition would fight the travel
-/// animation, and there is nothing to transition between anyway.
+/// THERE ARE NO PAGES. Every route builds the same [WorldView] over the same
+/// scene; the URL only says which location is showing in front of it. That is
+/// why every route here uses a `NoTransitionPage` — there is nothing to
+/// transition between, and the scene must not flicker while the content over it
+/// changes.
 library;
 
 import 'dart:async';
@@ -46,11 +47,34 @@ Future<void> main() async {
   // cube's shading is cached on first paint and would then be kept UNCARVED
   // until something else happened to invalidate it. See [Carving.bake].
   await Future.wait<void>([Shaders.load(), Carving.bake()]);
-  // ?bare=1 renders the scene alone, so there is no statement to wait for and
-  // holding the frame would only stall on the watchdog.
-  if (!bareScene) binding.deferFirstFrame();
+  // ⚠️ ONLY WHEN THERE IS ACTUALLY A STATEMENT COMING. Holding the frame for a
+  // mask that will never be made buys nothing and costs the whole watchdog: the
+  // page sits on its flat background for two seconds and then appears.
+  //
+  // Two cases produce no mask. `?bare=1` renders the scene alone. And only the
+  // hero composes a statement — the other locations are a heading over the
+  // scene, with nothing to draw twice, so there is nothing to hide.
+  //
+  // ⚠️ THE SECOND CASE IS NEW, and it is a consequence of the world no longer
+  // travelling: every location used to be built at once, side by side, so the
+  // hero's mask existed however you arrived. Now only the location you asked
+  // for is built. Measured before this: the hero painted at 1.3s and /about at
+  // 3.1s, which is the watchdog and nothing else.
+  final holdForStatement = !bareScene && indexOfPath(_initialPath) == 0;
+  if (holdForStatement) binding.deferFirstFrame();
   runApp(const PortfolioApp());
-  if (!bareScene) _releaseWhenStatementIsSet(binding);
+  if (holdForStatement) _releaseWhenStatementIsSet(binding);
+}
+
+/// The location the page was opened at, before the router exists.
+///
+/// Written to survive either URL strategy rather than assuming the current one:
+/// go_router defaults to the hash on web, so the path lives in the fragment,
+/// but nothing here would notice being switched to real paths later.
+String get _initialPath {
+  final base = Uri.base;
+  if (base.fragment.startsWith('/')) return base.fragment;
+  return base.path.isEmpty ? '/' : base.path;
 }
 
 /// Releases the held frame once the statement has been rasterised.
