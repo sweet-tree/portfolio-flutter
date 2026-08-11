@@ -23,6 +23,15 @@ import sys
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
 ROOT = sys.argv[2] if len(sys.argv) > 2 else "build/web"
 
+# Loopback by default; pass 0.0.0.0 to reach it from a phone on the same
+# network.
+#
+# ⚠️ A LAN ADDRESS IS NOT A SECURE CONTEXT, so cross-origin isolation can never
+# engage there however the headers are set — Flutter falls back to the
+# single-threaded renderer. Layout, gestures and behaviour are honest over LAN;
+# frame rates are not, and only the real deployment can answer those.
+HOST = sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1"
+
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
     """Serves files with caching disabled in every way a browser respects."""
@@ -69,8 +78,8 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 def main() -> None:
     os.chdir(ROOT)
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", PORT), NoCacheHandler) as httpd:
-        print(f"serving {ROOT} on http://localhost:{PORT} (no cache)")
+    with socketserver.TCPServer((HOST, PORT), NoCacheHandler) as httpd:
+        print(f"serving {ROOT} on http://{HOST}:{PORT} (no cache)")
         httpd.serve_forever()
 
 

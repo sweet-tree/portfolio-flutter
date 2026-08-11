@@ -17,8 +17,8 @@ import 'package:go_router/go_router.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/stats_overlay.dart';
 import 'package:portfolio/src/world/carving.dart';
-import 'package:portfolio/src/world/location_page.dart';
 import 'package:portfolio/src/world/locations.dart';
+import 'package:portfolio/src/world/section_route.dart';
 import 'package:portfolio/src/world/shaders.dart';
 import 'package:portfolio/src/world/type_glow.dart';
 import 'package:portfolio/src/world/world_shell.dart';
@@ -124,16 +124,27 @@ void _releaseWhenStatementIsSet(WidgetsBinding binding) {
 /// shaders reattached, the cube's cached shading recomputed from scratch, work
 /// done for a change that is supposed to be free. The shell is built once; only
 /// the page inside it changes.
+
+/// The hand that may take hold of a section's transition.
+///
+/// ⚠️ ONE INSTANCE BECAUSE THERE IS ONE NAVIGATOR AND ONE FINGER. It is
+/// declared beside the router because they have the same lifetime and the same
+/// scope: the router builds the pages that carry it, and the shell drives it.
+final SectionDrag _drag = SectionDrag();
+
 final GoRouter _router = GoRouter(
   routes: [
     ShellRoute(
-      builder: (context, state, child) => WorldShell(child: child),
+      builder: (context, state, child) =>
+          WorldShell(drag: _drag, child: child),
       routes: [
         for (final location in kLocations)
           GoRoute(
             path: location.path,
-            pageBuilder: (context, state) => NoTransitionPage<void>(
-              child: LocationPage(location: location),
+            pageBuilder: (context, state) => SectionPage(
+              location: location,
+              drag: _drag,
+              key: ValueKey<String>(location.path),
             ),
           ),
       ],
