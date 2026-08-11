@@ -246,7 +246,11 @@ final double kEdgeWidth = qDouble('edge', 1).clamp(0.3, 2.0);
 /// is already rendered once a frame at a sixteenth of the pixels, so this costs
 /// one projection and one lookup — against roughly 480 hashed noise evaluations
 /// per pixel for the fog inside. About a hundredfold, not a twofold.
-final double kWall = qDouble('wall', 1).clamp(0.0, 4.0);
+///
+/// 0.4 is his, chosen on the running scene against the interior fog and the
+/// pool. At 1 the climb competed with the fog for the same body; low enough and
+/// it reads as the platform feeding the object rather than as a second glow.
+final double kWall = qDouble('wall', 0.4).clamp(0.0, 4.0);
 
 /// Draws the cube's RIGHT side face as a copy of its left one. `?twin=1`.
 ///
@@ -374,8 +378,19 @@ final double kSceneScale = qDouble('scale', 1).clamp(0.3, 2.0);
 ///   128 the fog inside the carving
 ///   256 the burning cut edges of the carving
 ///   512 the carving's glass MATERIAL — leaves it an unlit hole in the stone
-///  1024 the pool the carving casts on the sheet
-final double kOff = qDouble('off', 0);
+///  1024 the pool the cube casts on the sheet
+///  2048 the energy climbing the cube's walls from the contact
+///
+/// ⚠️ 1024 IS ON BY DEFAULT AS OF 2026-08-10, WHICH MAKES THIS MORE THAN A
+/// PROFILING TOOL. The pool the cube casts down onto the sheet has been off
+/// through every comparison since the interior fog was built, and it stayed
+/// off long enough that he settled the rest of the scene against a picture
+/// without it. Turning it back on now would change a composition he has already
+/// judged; it comes back when he asks for it, not by default.
+///
+/// A default with a feature disabled in it is a smell, and it is written here
+/// rather than hidden: the scene ships with one term deliberately off.
+final double kOff = qDouble('off', 1024);
 
 /// Pins the scene's clock to a fixed second. Negative means run normally.
 ///

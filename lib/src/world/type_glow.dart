@@ -762,37 +762,54 @@ class _GlowPainter extends CustomPainter {
     Offset shift,
     double viewportHeight,
   ) {
+    // The part of the rasterisation lying under this region.
+    //
+    // ⚠️ SCALED BY THE IMAGE'S OWN SIZE OVER THE BLOCK'S, NOT BY THE PIXEL
+    // RATIO. The capture ROUNDS its dimensions to whole device pixels, so the
+    // mask is up to half a pixel off the block times the ratio — and using the
+    // ratio asks for a source rectangle slightly wider than the image really
+    // is. Drawn into a destination of the true size, that is a fractional
+    // RESAMPLE of the whole mask, and it softens every letter in the sentence.
+    // It cost the statement its edges for an hour, and he caught it at
+    // `?word=0`, where the error lands on all of the type at once.
+    //
+    // The image's own dimensions over the block's are the exact scale between
+    // the two spaces, by definition. For the whole block this returns precisely
+    // the whole image, which is what it used to be handed literally.
+    final sx = glyphs.image.width / area.width;
+    final sy = glyphs.image.height / area.height;
+
+    // ⚠️ AND SNAPPED TO WHOLE TEXELS, with everything else derived from the
+    // snapped rectangle. A crop landing between texels is resampled by that
+    // fraction — the same fault again, confined to one word. Rounding the
+    // SOURCE and deriving the destination from it keeps the two exactly
+    // proportional; the cost is the region's boundary moving by under a pixel,
+    // which nothing can see because the boundary is never drawn.
+    final glyphSrc = Rect.fromLTRB(
+      ((region.left - area.left) * sx).roundToDouble(),
+      ((region.top - area.top) * sy).roundToDouble(),
+      ((region.right - area.left) * sx).roundToDouble(),
+      ((region.bottom - area.top) * sy).roundToDouble(),
+    );
+    final snapped = Rect.fromLTRB(
+      area.left + glyphSrc.left / sx,
+      area.top + glyphSrc.top / sy,
+      area.left + glyphSrc.right / sx,
+      area.top + glyphSrc.bottom / sy,
+    );
+    final dst = snapped.shift(shift);
+
     // ⚠️ SIZED IN LOGICAL PIXELS, NOT DEVICE PIXELS. See kColourScale — these
     // hold a smooth gradient, and the sharpness of the result comes entirely
-    // from the glyph image, which IS at device resolution.
+    // from the glyph image, which IS at device resolution. Sized against the
+    // SNAPPED rectangle, because that is the one being drawn into.
     Size bufferFor(double scale) => Size(
-      (region.width * scale).roundToDouble().clamp(1, double.infinity),
-      (region.height * scale).roundToDouble().clamp(1, double.infinity),
+      (snapped.width * scale).roundToDouble().clamp(1, double.infinity),
+      (snapped.height * scale).roundToDouble().clamp(1, double.infinity),
     );
 
     final colourBuffer = bufferFor(kColourScale);
     final bloomBuffer = bufferFor(kBloomScale);
-
-    // The part of the rasterisation lying under this region. The colour buffers
-    // cover the region exactly, so only this one has to be narrowed.
-    //
-    // ⚠️ FROM THE PIXEL RATIO, NOT AS A FRACTION OF THE IMAGE'S SIZE. The
-    // capture ROUNDS its dimensions to whole device pixels, so the image is up
-    // to half a pixel bigger or smaller than the block times the ratio — and a
-    // fraction taken against that rounded size lands the crop a fraction of a
-    // texel off its true place. Across the whole block that error is spread
-    // over two thousand pixels and cannot be seen; across one word it is the
-    // whole error, and with nearest sampling it turns a letter's edge into
-    // steps. The rectangles are snapped to whole logical pixels, so multiplying
-    // by the ratio the capture actually used lands on exact texels.
-    final r = glyphs.pixelRatio;
-    final glyphSrc = Rect.fromLTRB(
-      (region.left - area.left) * r,
-      (region.top - area.top) * r,
-      (region.right - area.left) * r,
-      (region.bottom - area.top) * r,
-    );
-    final dst = region.shift(shift);
 
     // ── The spill, first and underneath ─────────────────────────────────────
     //
@@ -801,7 +818,7 @@ class _GlowPainter extends CustomPainter {
     // rest throws nothing.
     final sigma = viewportHeight * kGlowBloom;
     if (sigma > 0.01) {
-      final bloom = _render(bloomBuffer, region, kBloomScale, 1);
+      final bloom = _render(bloomBuffer, snapped, kBloomScale, 1);
       canvas
         ..saveLayer(
           dst.inflate(sigma * 4),
@@ -856,7 +873,7 @@ class _GlowPainter extends CustomPainter {
     // antialiased. What survives is a one-pixel ring of uncut colour: a frame
     // drawn neatly around the statement. Every rectangle here is already
     // snapped to whole pixels, so there is nothing else for it to do.
-    final colour = _render(colourBuffer, region, kColourScale, 0);
+    final colour = _render(colourBuffer, snapped, kColourScale, 0);
     canvas
       ..saveLayer(dst, Paint())
       ..drawImageRect(
