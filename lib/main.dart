@@ -1,25 +1,27 @@
 /// Portfolio — Dmitry Sevryukov.
 ///
-/// Web only. Routing, theme, and the single view that everything lives in.
+/// Web only. Routing, theme, and the shell everything is built inside.
 ///
-/// THERE ARE NO PAGES. Every route builds the same [WorldView] over the same
-/// scene; the URL only says which location is showing in front of it. That is
-/// why every route here uses a `NoTransitionPage` — there is nothing to
-/// transition between, and the scene must not flicker while the content over it
-/// changes.
+/// ⚠️ THE WORLD IS THE SHELL; THE ROUTES ARE ONLY WHAT STANDS IN FRONT OF IT.
+/// Every route is a child of one [WorldShell], so the scene is built once and
+/// survives every navigation — see world_shell.dart for why that matters.
 library;
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+// Part of the SDK, not a dependency. go_router used to re-export this and no
+// longer does.
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:go_router/go_router.dart';
 import 'package:portfolio/src/design/tokens.dart';
 import 'package:portfolio/src/stats_overlay.dart';
 import 'package:portfolio/src/world/carving.dart';
+import 'package:portfolio/src/world/location_page.dart';
 import 'package:portfolio/src/world/locations.dart';
 import 'package:portfolio/src/world/shaders.dart';
 import 'package:portfolio/src/world/type_glow.dart';
-import 'package:portfolio/src/world/world_view.dart';
+import 'package:portfolio/src/world/world_shell.dart';
 
 /// ⚠️ THE FIRST FRAME THE VISITOR SEES IS THE FINISHED ONE. Nothing arrives
 /// afterwards, because nothing is still loading by then.
@@ -42,6 +44,15 @@ import 'package:portfolio/src/world/world_view.dart';
 ///      is the complete composition
 Future<void> main() async {
   final binding = WidgetsFlutterBinding.ensureInitialized();
+  // ⚠️ REAL URLS, NOT `/#/work`. go_router defaults to the hash on web, which
+  // works but puts a `#` in the middle of every address on a site whose links
+  // are meant to be pasted into a CV and a LinkedIn profile.
+  //
+  // It costs one thing, and it is already paid: the server must answer an
+  // unknown path with index.html instead of 404, because /work is not a file.
+  // Cloudflare Pages does that on its own, and tool/serve.py now does too — it
+  // did not, which meant deep links worked in production and 404'd locally.
+  usePathUrlStrategy();
   // ⚠️ BOTH AWAITED, AND THE CARVING FOR A SECOND REASON. A shader arriving
   // late costs one plain frame; the carving arriving late is worse, because the
   // cube's shading is cached on first paint and would then be kept UNCARVED
@@ -105,14 +116,27 @@ void _releaseWhenStatementIsSet(WidgetsBinding binding) {
 
 /// Routes are generated from the location list, so a stop can never exist
 /// without a URL and a URL can never point at a stop that isn't there.
+///
+/// ⚠️ EVERY ROUTE IS A CHILD OF ONE SHELL, and that is what keeps the world
+/// alive across navigation. Before this, each route built its own copy of the
+/// scene, so changing page meant destroying it and building another: the
+/// shaders reattached, the cube's cached shading recomputed from scratch, work
+/// done for a change that is supposed to be free. The shell is built once; only
+/// the page inside it changes.
 final GoRouter _router = GoRouter(
   routes: [
-    for (final location in kLocations)
-      GoRoute(
-        path: location.path,
-        pageBuilder: (context, state) =>
-            const NoTransitionPage<void>(child: WorldView()),
-      ),
+    ShellRoute(
+      builder: (context, state, child) => WorldShell(child: child),
+      routes: [
+        for (final location in kLocations)
+          GoRoute(
+            path: location.path,
+            pageBuilder: (context, state) => NoTransitionPage<void>(
+              child: LocationPage(location: location),
+            ),
+          ),
+      ],
+    ),
   ],
 );
 

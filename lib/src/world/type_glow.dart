@@ -313,9 +313,22 @@ class _TypeMaskCaptureState extends State<TypeMaskCapture> {
     PaintingBinding.instance.systemFonts.removeListener(_onFontsChanged);
     // ⚠️ ONLY IF IT IS STILL OURS. Whoever published last owns it; clearing
     // blind would take away a mask another statement had just put there.
-    if (identical(typeGlyphs.value, _published) && _published != null) {
-      typeGlyphs.value?.image.dispose();
-      typeGlyphs.value = null;
+    final mine = _published;
+    if (mine != null && identical(typeGlyphs.value, mine)) {
+      // ⚠️ AND NOT NOW — AFTER THE FRAME. dispose() runs inside `finalizeTree`,
+      // which unmounts with the widget tree LOCKED, so notifying a listener
+      // here asks it to rebuild at the one moment rebuilding is forbidden:
+      // "setState() or markNeedsBuild() called when widget tree was locked".
+      //
+      // It is the statement's own colour layer that listens, so this tore that
+      // layer down illegally in the middle of the frame the sentence was
+      // leaving on — the assertion is loud in debug and silent in release, but
+      // the badly-timed teardown happens either way.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!identical(typeGlyphs.value, mine)) return;
+        typeGlyphs.value = null;
+        mine.image.dispose();
+      });
     }
     super.dispose();
   }

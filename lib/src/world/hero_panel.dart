@@ -27,18 +27,11 @@ import 'package:portfolio/src/world/type_glow.dart';
 import 'package:portfolio/src/world/world_scene.dart';
 
 class HeroPanel extends StatefulWidget {
-  const HeroPanel({
-    required this.location,
-    required this.index,
-    required this.onGo,
-    super.key,
-  });
+  // Dead since the rail became chrome: the position counter and the next link
+  // went with it, and they were the only things here that knew the index.
+  const HeroPanel({required this.location, super.key});
 
   final Location location;
-
-  /// Which location is showing, for the rail's position counter.
-  final int index;
-  final ValueChanged<int> onGo;
 
   @override
   State<HeroPanel> createState() => _HeroPanelState();

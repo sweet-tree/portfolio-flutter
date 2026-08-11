@@ -46,6 +46,15 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         for header in ("If-Modified-Since", "If-None-Match"):
             while header in self.headers:
                 del self.headers[header]
+
+        # ⚠️ FALL BACK TO index.html FOR UNKNOWN PATHS, or real URLs are only
+        # testable in production. The site uses path URLs — /work, not /#/work —
+        # so every deep link is a path this server has no file for, and it
+        # answered 404 while Cloudflare served the app. That is the worst shape
+        # for a bug: it works where you cannot debug it and fails where you can.
+        path = self.translate_path(self.path)
+        if not os.path.exists(path) and "." not in os.path.basename(path):
+            self.path = "/index.html"
         return super().send_head()
 
     def log_message(self, fmt: str, *args: object) -> None:

@@ -79,24 +79,24 @@ class GlassCard extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!kCardOn) return child;
     final radius = BorderRadius.circular(kCardRadius);
+    final fill = BoxDecoration(
+      color: Palette.bg.withValues(alpha: kCardTint),
+      borderRadius: radius,
+      // A hairline, the same one the rail draws with. A cut edge that BURNS is
+      // the thing that would make this read as the scene's own glass, and it
+      // needs the shader — see the note at the top.
+      border: Border.all(color: Palette.line),
+    );
     return ClipRRect(
-      // ⚠️ THE CLIP IS WHAT BOUNDS THE BLUR. A BackdropFilter with nothing
-      // clipping it blurs the entire layer beneath, not the part behind this
-      // widget — the nav and the rail would go soft too.
+      // ⚠️ THE CLIP IS WHAT BOUNDS THE BLUR — and, per the engine, its COST. A
+      // backdrop filter's paint bounds are its child's bounds expanded to the
+      // cull rect, and the cull rect is the intersection of the enclosing
+      // clips. Without this the saveLayer and the filter cover the whole
+      // screen, and the nav and the rail go soft with everything else.
       borderRadius: radius,
       child: BackdropFilter(
         filter: ui.ImageFilter.blur(sigmaX: kCardBlur, sigmaY: kCardBlur),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: Palette.bg.withValues(alpha: kCardTint),
-            borderRadius: radius,
-            // A hairline, the same one the rail draws with. A cut edge that
-            // BURNS is the thing that would make this read as the scene's own
-            // glass, and it needs the shader — see the note at the top.
-            border: Border.all(color: Palette.line),
-          ),
-          child: child,
-        ),
+        child: DecoratedBox(decoration: fill, child: child),
       ),
     );
   }
