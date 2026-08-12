@@ -68,6 +68,80 @@ final bool bareScene = qFlag('bare');
 /// a different gesture with a different reason for its threshold.
 const DeviceGestureSettings _kSwipeSlop = DeviceGestureSettings(touchSlop: 1);
 
+/// What may drag a section by hand.
+///
+/// ⚠️ A MOUSE MAY NOT. A drag recogniser accepts EVERY device kind unless it is
+/// told otherwise — `supportedDevices` null means "anything" — so holding the
+/// button down and moving sideways navigated, which is not a gesture anybody
+/// performs deliberately on a desktop and is one several people perform by
+/// accident while selecting or reaching for something.
+///
+/// ⚠️ AND IT IS THE DEVICE THAT DECIDES, NOT THE SCREEN. A narrow desktop
+/// window is still a mouse; an iPad in landscape is wide and is still a hand. A
+/// breakpoint would get both of those wrong, and this gets both right without
+/// knowing anything about the platform.
+const Set<PointerDeviceKind> _kSwipeDevices = <PointerDeviceKind>{
+  PointerDeviceKind.touch,
+  PointerDeviceKind.stylus,
+};
+
+/// How long the scroll stream must fall silent before a burst is over.
+///
+/// ⚠️ THERE IS NO END-OF-GESTURE ON THE WEB, AND THIS IS WHAT STANDS IN FOR IT.
+/// A trackpad swipe arrives as wheel events; nothing says when the fingers
+/// lift, and macOS goes on sending decaying momentum for up to a second or two
+/// after they do. The platform exposes no phase, so a momentum delta is
+/// genuinely indistinguishable from a deliberate one — the engine wanted this
+/// information too and could not get it, which is why it says outright that
+/// pan/zoom events are not generated on web.
+///
+/// So the boundary is drawn in TIME rather than guessed from the deltas: one
+/// burst of scrolling is one statement, and it is over when the scrolling
+/// stops. That is what makes a hard fling move exactly one section, and it is
+/// the one number in this file that is a judgement rather than a fact.
+///
+/// ⚠️ AND IT IS DELIBERATELY GENEROUS, BECAUSE SPLITTING A FLING IS THE WORSE
+/// FAILURE. Events arrive about every frame while momentum runs, but its TAIL
+/// goes sparse — deltas fall to a pixel or two and the browser stops bothering
+/// to send them every frame. A short window ends the burst in that tail, and
+/// the rest of the same fling then reads as a fresh swipe and takes a second
+/// section: one throw, two pages.
+///
+/// ⚠️ AND AN ACCELERATING DELTA DOES NOT MEAN A NEW SWIPE. It was made to,
+/// on the reasoning that momentum can only ever decay — which is true of
+/// momentum and useless here, because the commit fires fourteen pixels in,
+/// while the fingers are still on the surface and still speeding up. So the
+/// remainder of one swipe read as a second swipe, and then a third: the
+/// harder the throw, the longer it accelerated and the further it skipped.
+/// The silence is the only marker of a gesture ending, and it is the only one
+/// used to end a burst that nobody interrupts.
+const Duration _kBurstQuiet = Duration(milliseconds: 200);
+
+/// How far below its peak a burst must have fallen to count as coasting.
+///
+/// ⚠️ THIS IS WHAT MAKES A SECOND SWIPE LAND WITHOUT WAITING. Momentum decays
+/// and can never rise, so a delta bigger than the one before it means a hand.
+/// The trap — and the bug it caused — is that the commit fires fourteen pixels
+/// in, while the fingers are still on the surface and still speeding up, so a
+/// rise on its own also describes the rest of the swipe that just committed.
+///
+/// A quarter of the peak separates the two cleanly. While the fingers are
+/// pushing, every delta IS the peak, so nothing can be a quarter below it; once
+/// the throw is coasting, the series has fallen there within a few frames. Only
+/// then does a rise mean anything, and then it means only one thing.
+const double _kCoasting = 0.25;
+
+/// What counts as a rise rather than the jitter of a decaying series.
+const double _kRiseFactor = 1.5;
+const double _kRiseFloor = 2;
+
+/// How far a burst must travel before its axis is decided, in logical pixels.
+///
+/// A sideways swipe is never perfectly sideways, and a vertical one is never
+/// perfectly vertical. Deciding on the first delta reads the noise; deciding on
+/// the first couple of pixels reads the intent.
+const double _kBurstAxis = 2;
+
 class WorldShell extends StatefulWidget {
   const WorldShell({required this.drag, required this.child, super.key});
 
@@ -127,6 +201,45 @@ class _WorldShellState extends State<WorldShell> {
   /// and it was jitter in the first pixels rather than the size of the swipe.
   double _undecided = 0;
 
+  /// Closes the current scroll burst once the scrolling stops.
+  Timer? _quiet;
+
+  /// How far this burst has gone while its axis was still undecided.
+  double _burstDx = 0;
+  double _burstDy = 0;
+
+  /// The direction this burst took hold in, or null before it has taken hold.
+  bool? _burstForward;
+
+  /// One clock for every scroll signal, so gaps between them are comparable.
+  ///
+  /// ⚠️ THE GAPS ARE THE WHOLE QUESTION. A burst ends when the scrolling stops,
+  /// and whether two swipes are one burst or two depends entirely on how the
+  /// silence between them compares to the silence inside a single fling's
+  /// momentum. Those two numbers are properties of the hardware and the
+  /// browser, not of anything we can reason out, so the app measures them.
+  final Stopwatch _scrollClock = Stopwatch()..start();
+
+  /// When the last scroll signal arrived, by that clock.
+  int? _signalAt;
+
+  /// How many signals this burst has contained, and the longest silence inside
+  /// it. Reported by `?swipe=1`.
+  int _burstCount = 0;
+  int _burstMaxGap = 0;
+
+  /// The biggest sideways delta this burst has seen, and the last one.
+  double _burstPeak = 0;
+  double _lastMagnitude = 0;
+
+  /// This burst has already said what it had to say.
+  ///
+  /// ⚠️ IT IS WHAT MAKES ONE SWIPE MOVE ONE SECTION. Set the moment a burst
+  /// commits — and also when a burst turns out to be vertical — and cleared
+  /// only when the scrolling stops, so everything after the decision, momentum
+  /// included, is refused rather than counted.
+  bool _burstSpent = false;
+
   /// Which section is on top.
   ///
   /// ⚠️ READ FROM THE ROUTER'S DELEGATE, AND REBUILT WITH IT. Taken from
@@ -139,6 +252,12 @@ class _WorldShellState extends State<WorldShell> {
   /// stack can follow it.
   int get _index => indexOfPath(GoRouter.of(context).state.matchedLocation);
 
+  @override
+  void dispose() {
+    _quiet?.cancel();
+    super.dispose();
+  }
+
   void _start() {
     _forward = null;
     _undecided = 0;
@@ -149,7 +268,6 @@ class _WorldShellState extends State<WorldShell> {
   }
 
   void _update(DragUpdateDetails details) {
-    final width = context.size?.width ?? 1;
     final dx = details.delta.dx;
     _speed?.addPosition(
       _clock.elapsed,
@@ -168,27 +286,39 @@ class _WorldShellState extends State<WorldShell> {
     if (_forward == null) {
       _undecided += dx;
       if (_undecided == 0) return;
-      final forward = _undecided < 0;
-      final index = _index;
-      if (forward) {
-        // Nothing after the last section: keep waiting rather than starting
-        // something there is nowhere to take.
-        if (index + 1 >= kLocations.length) return;
-        _forward = true;
-        // The destination does not exist yet. Asking for it and taking hold of
-        // it are two steps — see SectionDrag.beginForward.
-        widget.drag.beginForward(width);
-        unawaited(context.push(kLocations[index + 1].path));
-      } else {
-        if (index == 0) return;
-        _forward = false;
-        widget.drag.beginBack(width);
-      }
-      // Everything moved while deciding belongs to the gesture.
-      widget.drag.update(-_undecided);
+      // Null means there is nothing that way: keep waiting rather than starting
+      // something there is nowhere to take.
+      _forward = _grab(_undecided);
       return;
     }
     widget.drag.update(-dx);
+  }
+
+  /// Takes hold of the section that [dx] points at, and moves it that far.
+  ///
+  /// Returns the direction taken, or null when there is nothing that way.
+  ///
+  /// ⚠️ SHARED BY THE FINGER AND THE TRACKPAD, because taking hold is the one
+  /// part that is identical between them: only how the movement arrives, and
+  /// when the decision is asked for, differ. It was written twice for an hour
+  /// and the copies had already begun to disagree.
+  bool? _grab(double dx) {
+    final width = context.size?.width ?? 1;
+    final forward = dx < 0;
+    final index = _index;
+    if (forward) {
+      if (index + 1 >= kLocations.length) return null;
+      // The destination does not exist yet. Asking for it and taking hold of it
+      // are two steps — see SectionDrag.beginForward.
+      widget.drag.beginForward(width);
+      unawaited(context.push(kLocations[index + 1].path));
+    } else {
+      if (index == 0) return null;
+      widget.drag.beginBack(width);
+    }
+    // Everything moved while deciding belongs to the gesture.
+    widget.drag.update(-dx);
+    return forward;
   }
 
   void _end(DragEndDetails details) {
@@ -200,6 +330,159 @@ class _WorldShellState extends State<WorldShell> {
     if (forward == null) return;
     widget.drag.release(measured, forward: forward);
   }
+
+  /// A scroll signal has arrived somewhere over the world.
+  ///
+  /// ⚠️ REGISTERING IS HOW TWO THINGS AVOID ANSWERING ONE EVENT. A pointer
+  /// signal is offered to everything under the pointer and the resolver hands
+  /// it to the FIRST to claim it, innermost outwards — so a card that can
+  /// actually scroll vertically claims a vertical swipe before this ever sees
+  /// it, and lets a horizontal one through because moving by zero is not a
+  /// scroll. That division is exactly the one we want and it costs nothing to
+  /// get: acting without registering is what would break it.
+  void _signal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    if (kSwipeReadout) _measure(event);
+    // ⚠️ A TRACKPAD ONLY, AND THE ENGINE IS THE ONE THAT KNOWS. It classifies
+    // every wheel event against properties no standard describes and gives a
+    // trackpad its own device kind — so a Magic Mouse swipe and a scroll wheel
+    // arrive already told apart, without us guessing from the shape of the
+    // deltas. Firefox is the exception: it restricts those properties, the
+    // engine declines to guess, and everything there reports as a mouse.
+    if (event.kind != PointerDeviceKind.trackpad) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, _scroll);
+  }
+
+  /// Puts the timing of the scroll stream on screen, for `?swipe=1`.
+  ///
+  /// ⚠️ IT REPORTS EVERY SCROLL SIGNAL, INCLUDING ONES WE REFUSE. What has to
+  /// be told apart is a swipe that arrives during another swipe's momentum from
+  /// the momentum itself, and both are made of the same events — so the only
+  /// thing that separates them is how long the stream goes quiet. Measuring
+  /// only the events we accept would leave exactly the interesting ones out.
+  ///
+  /// `gap` is the silence before this signal; `max` is the longest silence
+  /// inside the run of signals so far. A fling's own momentum sets `max` to the
+  /// browser's event cadence; putting fingers down again mid-momentum sets it
+  /// to the pause that did it, which is the number the burst window has to sit
+  /// under.
+  void _measure(PointerScrollEvent event) {
+    final now = _scrollClock.elapsedMilliseconds;
+    final since = _signalAt;
+    _signalAt = now;
+    final gap = since == null ? 0 : now - since;
+    if (gap > _kBurstQuiet.inMilliseconds) {
+      _burstCount = 0;
+      _burstMaxGap = 0;
+    }
+    _burstCount++;
+    if (gap > _burstMaxGap) _burstMaxGap = gap;
+    lastSignal.value =
+        '${event.kind.name}  '
+        'dx ${event.scrollDelta.dx.round()}  '
+        'dy ${event.scrollDelta.dy.round()}\n'
+        'gap ${gap}ms  max ${_burstMaxGap}ms  n $_burstCount';
+  }
+
+  /// One delta of a trackpad swipe, claimed.
+  void _scroll(PointerSignalEvent event) {
+    // ⚠️ AND THE BROWSER MUST BE TOLD TO KEEP OUT. macOS maps a two-finger
+    // sideways swipe to its own history back and forward, so without this the
+    // page navigates twice at once: our section moves and the browser leaves.
+    event.respond(allowPlatformDefault: false);
+
+    // A scroll goes the opposite way to the hand: sending the content right is
+    // the same statement as dragging it left.
+    final scroll = (event as PointerScrollEvent).scrollDelta;
+    final dx = -scroll.dx;
+    final magnitude = dx.abs();
+
+    // A rise, once the throw is coasting, is a hand back on the surface —
+    // momentum cannot speed up. So the burst ends here rather than when the
+    // scrolling stops, and this delta belongs to the next one.
+    if (_burstSpent &&
+        _lastMagnitude < _burstPeak * _kCoasting &&
+        magnitude > _lastMagnitude * _kRiseFactor + _kRiseFloor) {
+      _clearBurst();
+    }
+    _lastMagnitude = magnitude;
+    if (magnitude > _burstPeak) _burstPeak = magnitude;
+
+    // Every delta postpones the end of the burst, momentum included — which is
+    // what keeps the rest of a fling from being read as a second swipe.
+    _quiet?.cancel();
+    _quiet = Timer(_kBurstQuiet, _endBurst);
+    if (_burstSpent) return;
+
+    final forward = _burstForward;
+
+    if (forward == null) {
+      _burstDx += dx;
+      _burstDy += scroll.dy;
+      if (_burstDx.abs() < _kBurstAxis && _burstDy.abs() < _kBurstAxis) return;
+      if (_burstDy.abs() >= _burstDx.abs()) {
+        // Vertical, over something that did not want it. Nothing here to do,
+        // and nothing later in this burst either.
+        _burstSpent = true;
+        return;
+      }
+      final grabbed = _grab(_burstDx);
+      if (grabbed == null) {
+        _burstSpent = true;
+        return;
+      }
+      _burstForward = grabbed;
+      _commit(grabbed);
+      return;
+    }
+
+    widget.drag.update(-dx);
+    _commit(forward);
+  }
+
+  /// Finishes the journey the moment the burst has moved far enough to mean it.
+  ///
+  /// ⚠️ THE DECISION CANNOT WAIT FOR A RELEASE, BECAUSE THERE IS NONE. A finger
+  /// is asked once, when it lifts. A scroll stream is asked after every delta,
+  /// and the first one that passes the same threshold ends the gesture — the
+  /// remainder of the swipe, and all of its momentum, arrive to a burst that
+  /// has already spoken.
+  void _commit(bool forward) {
+    if (!widget.drag.meant(forward: forward)) return;
+    _burstSpent = true;
+    _burstForward = null;
+    widget.drag.release(0, forward: forward);
+  }
+
+  /// Forgets the burst so far, so the next delta begins a new one.
+  void _clearBurst() {
+    _burstDx = 0;
+    _burstDy = 0;
+    _burstPeak = 0;
+    _burstSpent = false;
+  }
+
+  /// The scrolling has stopped: whatever this burst was, it is over.
+  void _endBurst() {
+    _quiet = null;
+    _clearBurst();
+    final forward = _burstForward;
+    if (forward == null) return;
+    _burstForward = null;
+    // It took hold and never went far enough to mean it. Letting go puts the
+    // section back, exactly as lifting a finger early does.
+    widget.drag.release(0, forward: forward);
+  }
+
+  /// One line of the `?swipe=1` readout.
+  static Widget _readout(String line) => Text(
+    line,
+    style: const TextStyle(
+      color: Palette.accent,
+      fontSize: 13,
+      fontFamily: 'monospace',
+    ),
+  );
 
   /// A nav click or the rail's next link.
   void _go(int index) {
@@ -224,22 +507,28 @@ class _WorldShellState extends State<WorldShell> {
         const Positioned.fill(child: WorldScene()),
         if (!bareScene) ...[
           Positioned.fill(
-            child: RawGestureDetector(
-              gestures: <Type, GestureRecognizerFactory>{
-                // Sideways only. A vertical drag belongs to whatever is under
-                // it, which is the card scrolling its own text.
-                HorizontalDragGestureRecognizer:
-                    GestureRecognizerFactoryWithHandlers<
-                      HorizontalDragGestureRecognizer
-                    >(HorizontalDragGestureRecognizer.new, (recogniser) {
-                      recogniser
-                        ..onStart = ((_) => _start())
-                        ..onUpdate = _update
-                        ..onEnd = _end
-                        ..gestureSettings = _kSwipeSlop;
-                    }),
-              },
-              child: widget.child,
+            // A trackpad swipe never becomes a drag on the web — the engine
+            // says so outright — so it arrives here instead, as a scroll.
+            child: Listener(
+              onPointerSignal: _signal,
+              child: RawGestureDetector(
+                gestures: <Type, GestureRecognizerFactory>{
+                  // Sideways only. A vertical drag belongs to whatever is under
+                  // it, which is the card scrolling its own text.
+                  HorizontalDragGestureRecognizer:
+                      GestureRecognizerFactoryWithHandlers<
+                        HorizontalDragGestureRecognizer
+                      >(HorizontalDragGestureRecognizer.new, (recogniser) {
+                        recogniser
+                          ..onStart = ((_) => _start())
+                          ..onUpdate = _update
+                          ..onEnd = _end
+                          ..gestureSettings = _kSwipeSlop
+                          ..supportedDevices = _kSwipeDevices;
+                      }),
+                },
+                child: widget.child,
+              ),
             ),
           ),
           // ⚠️ CHROME SITS OVER EVERYTHING AND DOES NOT MOVE. The header and
@@ -251,6 +540,33 @@ class _WorldShellState extends State<WorldShell> {
           // page, because the mask's rectangle is measured relative to that
           // panel and the two halves of the sentence have to move together.
           // See location_page.dart.)
+          // `?swipe=1` — what the last gesture measured, for tuning against a
+          // real hand rather than a description of one.
+          if (kSwipeReadout)
+            Positioned(
+              left: 12,
+              top: 96,
+              child: IgnorePointer(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ValueListenableBuilder<SwipeReading?>(
+                      valueListenable: lastSwipe,
+                      builder: (context, reading, _) =>
+                          _readout(reading?.toString() ?? 'swipe to measure'),
+                    ),
+                    // The kind is the one thing that cannot be reasoned out:
+                    // whether a given device's sideways swipe reaches us as a
+                    // trackpad or as a mouse is the engine's own judgement.
+                    ValueListenableBuilder<String?>(
+                      valueListenable: lastSignal,
+                      builder: (context, signal, _) =>
+                          _readout(signal ?? 'no scroll yet'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           // Rebuilt whenever the router moves, so the highlight and the
           // counter follow a push as well as a go.
           AnimatedBuilder(

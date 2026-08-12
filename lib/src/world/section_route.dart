@@ -24,6 +24,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
+import 'package:portfolio/src/query_params.dart';
 import 'package:portfolio/src/world/location_page.dart';
 import 'package:portfolio/src/world/locations.dart';
 
@@ -198,6 +199,54 @@ class SectionRoute extends PageRoute<void> {
   }
 }
 
+/// `?swipe=1` — puts the last gesture's numbers on screen.
+///
+/// ⚠️ IT EXISTS BECAUSE FEELING IS NOT A MEASUREMENT. Four hypotheses about why
+/// swipes were failing were all wrong, and it only broke open when the gesture
+/// reported what it had actually measured: a velocity of exactly zero can mean
+/// one thing, where "feels sticky" could have meant five.
+final bool kSwipeReadout = qFlag('swipe');
+
+/// What the last gesture measured. Only written when [kSwipeReadout] is on.
+class SwipeReading {
+  const SwipeReading({
+    required this.moved,
+    required this.velocity,
+    required this.went,
+    required this.forward,
+  });
+
+  /// How far the section actually travelled, in logical pixels.
+  final double moved;
+
+  /// How fast the finger was going when it let go, in pixels per second.
+  final double velocity;
+
+  final bool went;
+  final bool forward;
+
+  @override
+  String toString() =>
+      '${forward ? "fwd" : "back"}  moved ${moved.round()}px  '
+      'v ${velocity.round()}  ${went ? "WENT" : "returned"}';
+}
+
+/// The last gesture's numbers, or null until one has been made.
+final ValueNotifier<SwipeReading?> lastSwipe = ValueNotifier<SwipeReading?>(
+  null,
+);
+
+/// The last scroll signal to arrive, described. Only written when
+/// [kSwipeReadout] is on.
+///
+/// ⚠️ IT REPORTS THE KIND, WHICH IS THE ONE THING THAT CANNOT BE REASONED OUT.
+/// Whether a given pointing device's sideways swipe reaches us as a TRACKPAD
+/// scroll or as a mouse wheel is decided by a heuristic inside the engine,
+/// against properties the browser does not standardise — so the only way to
+/// know what a particular mouse on a particular browser produces is to swipe it
+/// and read the answer.
+final ValueNotifier<String?> lastSignal = ValueNotifier<String?>(null);
+
 /// The hand on the transition.
 ///
 /// Holds whichever section route is currently on top, so a drag can drive it,
@@ -254,6 +303,34 @@ class SectionDrag {
   }
 
   bool isDriving(SectionRoute route) => identical(_driven, route);
+
+  /// How far the section being driven has actually moved, in logical pixels.
+  ///
+  /// ⚠️ IT COUNTS MOVEMENT BUFFERED BEFORE THE ROUTE EXISTED. A forward swipe
+  /// asks for a push, and the controller is not born until the frame after — so
+  /// a decision taken in those first events would measure zero and nothing
+  /// would ever commit.
+  double travelled({required bool forward}) {
+    final transition = _driven?.transition;
+    if (transition == null) return _awaitingPush ? _pending * _width : 0;
+    return _travel(transition.value, _width, forward: forward);
+  }
+
+  /// True once the section has moved far enough that the swipe was meant.
+  ///
+  /// ⚠️ THE SAME STATEMENT OF INTENT A FINGER MAKES, ASKED CONTINUOUSLY. A
+  /// finger has a release to be asked at; a scroll stream has none, so the
+  /// question is put after every delta instead. It is the same threshold and
+  /// the same meaning — only the moment of asking differs.
+  bool meant({required bool forward}) =>
+      travelled(forward: forward) >= _kMeantIt;
+
+  /// How far a section has travelled, given where its transition stands.
+  ///
+  /// The two directions run to opposite ends: driving one IN completes at 1,
+  /// driving one OUT completes at 0.
+  static double _travel(double value, double width, {required bool forward}) =>
+      forward ? value * width : width - value * width;
 
   /// Takes hold of the section already on top, to drive it BACKWARDS. This is
   /// the framework's own back-swipe: the route exists, so the finger owns it
@@ -337,11 +414,19 @@ class SectionDrag {
 
     // Did this say anything? Either it moved far enough to be meant, or it was
     // flicked hard enough to be meant. Both are the same statement.
-    final moved = transition.value * _width;
-    final travelled = forward ? moved : _width - moved;
+    final travelled = _travel(transition.value, _width, forward: forward);
     // Forwards is a leftward throw; backwards is a rightward one.
     final flicked = forward ? velocity < -_kFlick : velocity > _kFlick;
     final complete = travelled >= _kMeantIt || flicked;
+
+    if (kSwipeReadout) {
+      lastSwipe.value = SwipeReading(
+        moved: travelled,
+        velocity: velocity,
+        went: complete,
+        forward: forward,
+      );
+    }
 
     if (forward == complete) {
       unawaited(
